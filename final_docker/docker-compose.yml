@@ -1,0 +1,34 @@
+services:
+
+  # ── Base de datos PostgreSQL ──────────────────────────────────────────────────
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${DB_USER:-biouser}
+      POSTGRES_PASSWORD: ${DB_PASS:-biopass}
+      POSTGRES_DB:       ${DB_NAME:-biodb}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-biouser} -d ${DB_NAME:-biodb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Workers bio-inspirados ────────────────────────────────────────────────────
+  # Cada worker arranca, toma un escenario pendiente de la BD y lo ejecuta.
+  # Escalar con: docker compose up --scale worker=3
+  worker:
+    build: .
+    restart: on-failure
+    environment:
+      base_datos: postgresql://${DB_USER:-biouser}:${DB_PASS:-biopass}@db:5432/${DB_NAME:-biodb}
+    depends_on:
+      db:
+        condition: service_healthy
+    deploy:
+      replicas: 1
+
+volumes:
+  pgdata:

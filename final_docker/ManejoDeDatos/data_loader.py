@@ -15,10 +15,15 @@ Fuentes de datos:
   - Calculus, Gingivitis, Hypodontia : solo carpetas de clasificación.
   - Caries, Mouth Ulcer, Tooth Discoloration : carpetas + crops del dataset
     YOLO (bounding boxes) para aumentar estas clases pequeñas.
+  - Caries (extra) : crops de CAV-TEE (YOLOv5 OBB) y datasetcavitydetection (YOLO estándar).
   - El split 97/3 original del YOLO se ignora; se aplica 80/20 propio.
   - Gingivitis del YOLO se ignora para evitar duplicados con el folder.
+
+Para reconstruir el flat dataset con nuevas fuentes:
+  borrar dataset/oral-diseases-flat/ y correr setup() de nuevo.
 """
 
+import math
 import os
 import random
 import shutil
@@ -55,6 +60,13 @@ VAL_SPLIT    = 0.2
 IMAGE_EXTS   = {".jpg", ".jpeg", ".png", ".bmp"}
 EXCLUDE_DIRS = {"preview"}
 
+# ─── Datasets adicionales (caries) ────────────────────────────────────────────
+DATASET_CAV_TEE_NAME    = "maazmakhdoom/dental-cavity-detection-dataset"
+DATASET_CAV_TEE_DIR     = os.path.join(_REPO_ROOT, "dataset", "dental-cavity-cav-tee")
+
+DATASET_CAVITY_YML_NAME = "shahjahanabdullatif/datasetcavitydetection"
+DATASET_CAVITY_YML_DIR  = os.path.join(_REPO_ROOT, "dataset", "dental-cavity-yml")
+
 # Clases que vienen solo de las carpetas de clasificación
 FOLDER_CLASSES = {
     "Calculus":   os.path.join(DATASET_DIR, "Calculus",   "Calculus"),
@@ -72,8 +84,20 @@ FOLDER_AND_YOLO_CLASSES = {
 
 
 # ─── 1. Descarga del dataset ──────────────────────────────────────────────────
+def _download_kaggle_dataset(name: str, dest_dir: str) -> None:
+    """Descarga y extrae un dataset de Kaggle en dest_dir si no existe."""
+    if os.path.isdir(dest_dir) and any(os.scandir(dest_dir)):
+        print(f"[INFO] Dataset '{name}' ya existe en '{dest_dir}'.")
+        return
+    os.makedirs(dest_dir, exist_ok=True)
+    print(f"[INFO] Descargando '{name}'...")
+    kaggle.api.authenticate()
+    kaggle.api.dataset_download_files(name, path=dest_dir, unzip=True)
+    print(f"[INFO] Dataset '{name}' descargado en '{dest_dir}'.")
+
+
 def download_dataset():
-    """Descarga el dataset de Kaggle si no existe y construye el flat dataset."""
+    """Descarga todos los datasets de Kaggle y construye el flat dataset."""
     if os.path.isdir(DATASET_DIR) and any(os.scandir(DATASET_DIR)):
         print(f"[INFO] Dataset raw ya existe en '{DATASET_DIR}'.")
     else:
@@ -98,6 +122,9 @@ def download_dataset():
         os.remove(zip_path)
         print(f"[INFO] Dataset extraído en '{DATASET_DIR}'.")
 
+    _download_kaggle_dataset(DATASET_CAV_TEE_NAME, DATASET_CAV_TEE_DIR)
+    _download_kaggle_dataset(DATASET_CAVITY_YML_NAME, DATASET_CAVITY_YML_DIR)
+
     _build_flat_dataset()
 
 
@@ -119,12 +146,25 @@ def _build_flat_dataset():
         images = _collect_folder_images(src_dir)
         _shuffle_split_copy(images, class_name)
 
-    # Clases pequeñas: folder + crops YOLO
+    # Clases pequeñas: folder + crops YOLO + fuentes extra para Caries
     for class_name, (src_dir, yolo_id) in FOLDER_AND_YOLO_CLASSES.items():
         folder_imgs = _collect_folder_images(src_dir)
         class_staging = os.path.join(staging_dir, class_name.replace(" ", "_"))
         yolo_crops = _generate_yolo_crops(yolo_id, class_staging)
-        _shuffle_split_copy(folder_imgs + yolo_crops, class_name)
+
+        extra_crops = []
+        if class_name == "Caries":
+            extra_crops += _generate_yolo_obb_crops(
+                DATASET_CAV_TEE_DIR,
+                os.path.join(staging_dir, "caries_cav_tee"),
+            )
+            extra_crops += _generate_yolo_std_crops(
+                DATASET_CAVITY_YML_DIR,
+                class_id=0,
+                staging_dir=os.path.join(staging_dir, "caries_yml"),
+            )
+
+        _shuffle_split_copy(folder_imgs + yolo_crops + extra_crops, class_name)
 
     # Eliminar directorio temporal de crops
     if os.path.isdir(staging_dir):
@@ -202,6 +242,149 @@ def _generate_yolo_crops(yolo_class_id: int, staging_dir: str) -> list:
                     cv2.imwrite(dst, img[y1:y2, x1:x2])
                     crops.append(dst)
 
+    return crops
+
+
+def _generate_yolo_obb_crops(dataset_dir: str, staging_dir: str) -> list:
+    """
+    Extrae crops de un dataset YOLOv5 OBB (Roboflow).
+    Soporta dos estructuras de carpetas:
+      - {split}/images/ y {split}/labels/  (Roboflow split-first)
+      - images/{split}/ y labels/{split}/  (YOLO estándar)
+    Soporta dos formatos de anotación OBB:
+      - class cx cy w h angle  (6 valores, ángulo en grados)
+      - class x1 y1 x2 y2 x3 y3 x4 y4  (9 valores, esquinas normalizadas)
+    """
+    if not os.path.isdir(dataset_dir):
+        print(f"[ADVERTENCIA] CAV-TEE no encontrado en '{dataset_dir}', se omite.")
+        return []
+
+    os.makedirs(staging_dir, exist_ok=True)
+    crops = []
+
+    for split in ("train", "valid", "val", "test"):
+        images_dir = os.path.join(dataset_dir, split, "images")
+        labels_dir = os.path.join(dataset_dir, split, "labels")
+        if not os.path.isdir(images_dir):
+            images_dir = os.path.join(dataset_dir, "images", split)
+            labels_dir = os.path.join(dataset_dir, "labels", split)
+        if not os.path.isdir(images_dir):
+            continue
+
+        for img_fname in sorted(os.listdir(images_dir)):
+            if os.path.splitext(img_fname)[1].lower() not in IMAGE_EXTS:
+                continue
+            label_path = os.path.join(labels_dir, os.path.splitext(img_fname)[0] + ".txt")
+            if not os.path.isfile(label_path):
+                continue
+
+            img = cv2.imread(os.path.join(images_dir, img_fname))
+            if img is None:
+                continue
+            h_img, w_img = img.shape[:2]
+
+            with open(label_path) as f:
+                for ann_idx, line in enumerate(f):
+                    parts = line.strip().split()
+                    if len(parts) not in (6, 9):
+                        continue
+                    try:
+                        int(parts[0])
+                    except ValueError:
+                        continue
+
+                    if len(parts) == 6:
+                        cx, cy, bw, bh, angle = map(float, parts[1:])
+                        cos_a = abs(math.cos(math.radians(angle)))
+                        sin_a = abs(math.sin(math.radians(angle)))
+                        aabb_w = bw * cos_a + bh * sin_a
+                        aabb_h = bw * sin_a + bh * cos_a
+                        x1 = max(0, int((cx - aabb_w / 2) * w_img))
+                        y1 = max(0, int((cy - aabb_h / 2) * h_img))
+                        x2 = min(w_img, int((cx + aabb_w / 2) * w_img))
+                        y2 = min(h_img, int((cy + aabb_h / 2) * h_img))
+                    else:
+                        coords = list(map(float, parts[1:]))
+                        xs = [coords[i] * w_img for i in range(0, 8, 2)]
+                        ys = [coords[i] * h_img for i in range(1, 8, 2)]
+                        x1 = max(0, int(min(xs)))
+                        y1 = max(0, int(min(ys)))
+                        x2 = min(w_img, int(max(xs)))
+                        y2 = min(h_img, int(max(ys)))
+
+                    if x2 <= x1 or y2 <= y1:
+                        continue
+
+                    stem = os.path.splitext(img_fname)[0]
+                    dst = os.path.join(staging_dir, f"{split}_{stem}_ann{ann_idx}.jpg")
+                    cv2.imwrite(dst, img[y1:y2, x1:x2])
+                    crops.append(dst)
+
+    print(f"  [CAV-TEE OBB] {len(crops)} crops extraídos de '{dataset_dir}'")
+    return crops
+
+
+def _generate_yolo_std_crops(dataset_dir: str, class_id: int, staging_dir: str) -> list:
+    """
+    Extrae crops de un dataset YOLO estándar con directorio configurable.
+    Soporta las mismas dos estructuras que _generate_yolo_obb_crops.
+    class_id=0 para la mayoría de datasets de cavidad de una sola clase.
+    """
+    if not os.path.isdir(dataset_dir):
+        print(f"[ADVERTENCIA] Dataset YML no encontrado en '{dataset_dir}', se omite.")
+        return []
+
+    os.makedirs(staging_dir, exist_ok=True)
+    crops = []
+
+    for split in ("train", "valid", "val", "test"):
+        images_dir = os.path.join(dataset_dir, split, "images")
+        labels_dir = os.path.join(dataset_dir, split, "labels")
+        if not os.path.isdir(images_dir):
+            images_dir = os.path.join(dataset_dir, "images", split)
+            labels_dir = os.path.join(dataset_dir, "labels", split)
+        if not os.path.isdir(images_dir):
+            continue
+
+        for img_fname in sorted(os.listdir(images_dir)):
+            if os.path.splitext(img_fname)[1].lower() not in IMAGE_EXTS:
+                continue
+            label_path = os.path.join(labels_dir, os.path.splitext(img_fname)[0] + ".txt")
+            if not os.path.isfile(label_path):
+                continue
+
+            img = cv2.imread(os.path.join(images_dir, img_fname))
+            if img is None:
+                continue
+            h_img, w_img = img.shape[:2]
+
+            with open(label_path) as f:
+                for ann_idx, line in enumerate(f):
+                    parts = line.strip().split()
+                    if len(parts) != 5:
+                        continue
+                    try:
+                        cid = int(parts[0])
+                    except ValueError:
+                        continue
+                    if cid != class_id:
+                        continue
+
+                    cx, cy, bw, bh = map(float, parts[1:])
+                    x1 = max(0, int((cx - bw / 2) * w_img))
+                    y1 = max(0, int((cy - bh / 2) * h_img))
+                    x2 = min(w_img, int((cx + bw / 2) * w_img))
+                    y2 = min(h_img, int((cy + bh / 2) * h_img))
+
+                    if x2 <= x1 or y2 <= y1:
+                        continue
+
+                    stem = os.path.splitext(img_fname)[0]
+                    dst = os.path.join(staging_dir, f"{split}_{stem}_ann{ann_idx}.jpg")
+                    cv2.imwrite(dst, img[y1:y2, x1:x2])
+                    crops.append(dst)
+
+    print(f"  [Cavity YML] {len(crops)} crops extraídos de '{dataset_dir}'")
     return crops
 
 

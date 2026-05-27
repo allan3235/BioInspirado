@@ -1,0 +1,14 @@
+tensorflow==2.21.0
+keras==3.14.1
+numpy==2.4.4
+h5py==3.14.0
+matplotlib
+scikit-learn
+Pillow
+tqdm==4.67.1
+seaborn
+sqlalchemy
+psycopg2-binary
+python-dotenv
+kaggle==2.1.2
+opencv-python-headless

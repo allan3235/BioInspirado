@@ -1,0 +1,15 @@
+**/__pycache__/
+**/*.py[cod]
+**/.env
+**/*.h5
+**/*.hdf5
+**/*.pkl
+**/*.csv
+**/*.zip
+**/*.tar.gz
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
