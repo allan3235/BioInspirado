@@ -88,6 +88,7 @@ def _download_kaggle_dataset(name: str, dest_dir: str) -> None:
     if os.path.isdir(dest_dir) and any(os.scandir(dest_dir)):
         print(f"[INFO] Dataset '{name}' ya existe en '{dest_dir}'.")
         return
+    import kaggle
     os.makedirs(dest_dir, exist_ok=True)
     print(f"[INFO] Descargando '{name}'...")
     kaggle.api.authenticate()
@@ -100,6 +101,7 @@ def download_dataset():
     if os.path.isdir(DATASET_DIR) and any(os.scandir(DATASET_DIR)):
         print(f"[INFO] Dataset raw ya existe en '{DATASET_DIR}'.")
     else:
+        import kaggle
         os.makedirs(DATASET_DIR, exist_ok=True)
         print(f"[INFO] Descargando '{DATASET_NAME}'...")
         kaggle.api.authenticate()

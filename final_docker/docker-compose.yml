@@ -4,5 +4,7 @@ services:
     restart: on-failure
     environment:
       base_datos: ${base_datos}
+      TF_CPP_MIN_LOG_LEVEL: "3"
+      TF_ENABLE_ONEDNN_OPTS: "0"
     deploy:
       replicas: 70
