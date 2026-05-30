@@ -35,6 +35,10 @@ MIGRACIONES = [
     "ALTER TABLE escenarios_busqueda ADD COLUMN IF NOT EXISTS mensaje_error TEXT",
     "ALTER TABLE escenarios_busqueda ADD COLUMN IF NOT EXISTS experimento_id INTEGER REFERENCES experimentos(id)",
 
+    # modelos — columnas que faltaban
+    "ALTER TABLE modelos ADD COLUMN IF NOT EXISTS archivo BYTEA",
+    "ALTER TABLE modelos ADD COLUMN IF NOT EXISTS formato VARCHAR(10)",
+
     # tareas_evaluacion — por si también tiene columnas viejas
     "ALTER TABLE tareas_evaluacion ADD COLUMN IF NOT EXISTS fitness DOUBLE PRECISION",
     "ALTER TABLE tareas_evaluacion ADD COLUMN IF NOT EXISTS mensaje_error TEXT",
