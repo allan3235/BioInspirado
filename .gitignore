@@ -31,7 +31,9 @@ dataset/
 *.pickle
 *.csv
 *.parquet
-
+# Backups de base de datos
+*.sql
+*.dump
 # Modelos entrenados
 *.pt
 *.pth

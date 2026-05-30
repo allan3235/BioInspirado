@@ -33,7 +33,6 @@ import cv2
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
-import kaggle
 
 from ManejoDeDatos.basededatos import Imagen, ImagenUso, obtener_sesion
 
