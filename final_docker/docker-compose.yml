@@ -6,5 +6,9 @@ services:
       base_datos: ${base_datos}
       TF_CPP_MIN_LOG_LEVEL: "3"
       TF_ENABLE_ONEDNN_OPTS: "0"
+    mem_limit: 4000m
     deploy:
-      replicas: 70
+      replicas: 7
+      resources:
+        limits:
+          memory: 4000M
