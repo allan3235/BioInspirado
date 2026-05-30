@@ -40,6 +40,7 @@ class Modelo(Base):
     experimento: Mapped["Experimento"] = relationship(back_populates="modelos")
     metricas: Mapped[List["Metrica"]] = relationship(back_populates="modelo")
     hiperparametros: Mapped[Optional["Hiperparametro"]] = relationship(back_populates="modelo")
+    diagnostico: Mapped[Optional["ResultadoDiagnostico"]] = relationship(back_populates="modelo")
 
 
 class Metrica(Base):
@@ -71,6 +72,21 @@ class Hiperparametro(Base):
     tasa_dropout: Mapped[Optional[float]]
 
     modelo: Mapped["Modelo"] = relationship(back_populates="hiperparametros")
+
+
+class ResultadoDiagnostico(Base):
+    __tablename__ = "resultados_diagnostico"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    modelo_id: Mapped[int] = mapped_column(ForeignKey("modelos.id"))
+    curva_perdida: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
+    curva_precision: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
+    matriz_confusion: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
+    curva_roc: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
+    formato: Mapped[str] = mapped_column(String(10), default="png")
+    fecha: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    modelo: Mapped["Modelo"] = relationship(back_populates="diagnostico")
 
 
 class EscenarioBusqueda(Base):
@@ -241,6 +257,25 @@ def consultar_mejores_escenarios(sesion: Session, limite: int = 10) -> list:
         .limit(limite)
     )
     return sesion.execute(stmt).scalars().all()
+
+
+def guardar_diagnostico(sesion: Session, modelo_id: int,
+                        curva_perdida: Optional[bytes] = None,
+                        curva_precision: Optional[bytes] = None,
+                        matriz_confusion: Optional[bytes] = None,
+                        curva_roc: Optional[bytes] = None,
+                        formato: str = "png") -> "ResultadoDiagnostico":
+    diag = ResultadoDiagnostico(
+        modelo_id=modelo_id,
+        curva_perdida=curva_perdida,
+        curva_precision=curva_precision,
+        matriz_confusion=matriz_confusion,
+        curva_roc=curva_roc,
+        formato=formato,
+    )
+    sesion.add(diag)
+    sesion.commit()
+    return diag
 
 
 def encolar_tareas(sesion: Session, experimento_id: int, algoritmo: str,

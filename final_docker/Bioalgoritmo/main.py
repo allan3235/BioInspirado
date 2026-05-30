@@ -14,12 +14,16 @@ Variables de entorno:
 
 import os
 import sys
+import time
+from datetime import timedelta
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+from sqlalchemy import func, select
 from ManejoDeDatos.basededatos import (
+    EscenarioBusqueda,
     iniciar_bd,
     obtener_sesion,
     tomar_escenario,
@@ -38,6 +42,34 @@ from bio_optimizer_core import (
     build_model,
     crear_experimento,
 )
+
+
+def _progreso(sesion, nodo_id: str, inicio_global: float) -> str:
+    total = sesion.execute(select(func.count()).select_from(EscenarioBusqueda)).scalar()
+    pendientes = sesion.execute(
+        select(func.count()).select_from(EscenarioBusqueda)
+        .where(EscenarioBusqueda.estado == "pendiente")
+    ).scalar()
+    completados = sesion.execute(
+        select(func.count()).select_from(EscenarioBusqueda)
+        .where(EscenarioBusqueda.estado == "completado")
+    ).scalar()
+
+    procesados = total - pendientes
+    pct = (completados / total * 100) if total else 0
+    elapsed = time.time() - inicio_global
+
+    if completados > 0:
+        eta_seg = (elapsed / completados) * (total - completados)
+        eta_str = str(timedelta(seconds=int(eta_seg)))
+    else:
+        eta_str = "calculando..."
+
+    return (
+        f"[{nodo_id}] Progreso: {completados}/{total} completados "
+        f"({pct:.1f}%) | en proceso: {procesados - completados} | "
+        f"ETA: {eta_str}"
+    )
 
 
 def ejecutar_escenario(escenario, sesion) -> tuple:
@@ -103,6 +135,7 @@ def main():
     if rescatados:
         print(f"[{nodo_id}] {rescatados} escenario(s) colgado(s) reencolado(s).")
 
+    inicio_global = time.time()
     escenarios_procesados = 0
 
     while True:
@@ -113,7 +146,9 @@ def main():
             break
 
         print(f"[{nodo_id}] Escenario #{escenario.id}: '{escenario.nombre}' ({escenario.algoritmo})")
+        print(_progreso(sesion, nodo_id, inicio_global))
 
+        t0 = time.time()
         try:
             experimento_id, mejor_fitness, mejor_individuo, fitness_history = ejecutar_escenario(
                 escenario, sesion
@@ -127,14 +162,20 @@ def main():
                 fitness_history=fitness_history,
             )
             escenarios_procesados += 1
-            print(f"[{nodo_id}] Escenario #{escenario.id} completado. Fitness: {mejor_fitness:.4f}")
+            duracion = str(timedelta(seconds=int(time.time() - t0)))
+            print(
+                f"[{nodo_id}] Escenario #{escenario.id} completado en {duracion}. "
+                f"Fitness: {mejor_fitness:.4f}"
+            )
+            print(_progreso(sesion, nodo_id, inicio_global))
 
         except Exception as e:
             fallar_escenario(sesion, escenario.id, str(e))
             print(f"[{nodo_id}] Error en escenario #{escenario.id}: {e}")
 
     sesion.close()
-    print(f"[{nodo_id}] Total escenarios procesados: {escenarios_procesados}")
+    total_tiempo = str(timedelta(seconds=int(time.time() - inicio_global)))
+    print(f"[{nodo_id}] Total escenarios procesados: {escenarios_procesados} en {total_tiempo}")
 
 
 if __name__ == "__main__":
