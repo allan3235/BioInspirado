@@ -540,14 +540,17 @@ def _decodificar_imagen(datos_binarios: bytes) -> np.ndarray:
     return img.astype(np.float32) / 255.0
 
 
-def load_dataset_bd(use_augmentation: bool = True):
+def load_dataset_bd():
     """
     Carga el dataset desde PostgreSQL y retorna (train_ds, val_ds, class_names).
 
+    Los datasets se retornan SIN batch y SIN augmentation para que cada individuo
+    aplique sus propios hiperparametros via preparar_datasets().
+
     Retorna
     -------
-    train_ds   : tf.data.Dataset de entrenamiento
-    val_ds     : tf.data.Dataset de validacion
+    train_ds   : tf.data.Dataset de entrenamiento (shuffled, sin batch)
+    val_ds     : tf.data.Dataset de validacion (sin batch)
     class_names: lista de nombres de clases ordenada alfabeticamente
     """
     print("[INFO] Cargando imagenes de entrenamiento desde la BD...")
@@ -573,25 +576,8 @@ def load_dataset_bd(use_augmentation: bool = True):
     X_train, y_train = procesar(train_raw)
     X_val,   y_val   = procesar(val_raw)
 
-    AUTOTUNE = tf.data.AUTOTUNE
-
-    train_ds = tf.data.Dataset.from_tensor_slices((X_train, y_train))
+    train_ds = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(1000, seed=SEED)
     val_ds   = tf.data.Dataset.from_tensor_slices((X_val,   y_val))
-
-    if use_augmentation:
-        augment = tf.keras.Sequential([
-            tf.keras.layers.RandomFlip("horizontal"),
-            tf.keras.layers.RandomRotation(0.1),
-            tf.keras.layers.RandomZoom(0.1),
-            tf.keras.layers.RandomTranslation(0.1, 0.1),
-        ])
-        train_ds = train_ds.map(
-            lambda x, y: (augment(x, training=True), y),
-            num_parallel_calls=AUTOTUNE,
-        )
-
-    train_ds = train_ds.shuffle(1000, seed=SEED).batch(BATCH_SIZE).prefetch(AUTOTUNE)
-    val_ds   = val_ds.batch(BATCH_SIZE).prefetch(AUTOTUNE)
 
     print(f"[INFO] Clases ({num_clases}): {class_names}")
     print(f"[INFO] Train: {len(X_train)} | Val: {len(X_val)}")

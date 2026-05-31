@@ -65,6 +65,10 @@ class Hiperparametro(Base):
     optimizador: Mapped[Optional[str]] = mapped_column(String(50))
     epocas: Mapped[Optional[int]]
     aumento_datos: Mapped[Optional[bool]]
+    neuronas_densas: Mapped[Optional[int]]
+    neuronas_finales: Mapped[Optional[int]]
+    tasa_dropout: Mapped[Optional[float]]
+    filtros_conv: Mapped[Optional[int]]
 
     modelo: Mapped["Modelo"] = relationship(back_populates="hiperparametros")
 

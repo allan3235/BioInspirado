@@ -43,10 +43,11 @@ from bio_optimizer_core import (
     validar_parametros_ga,
     GeneticAlgorithm,
     ParticleSwarmOptimizer,
-    guardar_mejor_modelo_bd,
     guardar_individuo_bd,
+    serializar_modelo,
     build_model,
     crear_experimento,
+    preparar_datasets,
 )
 
 
@@ -81,9 +82,7 @@ def _progreso(sesion, nodo_id: str, inicio_global: float) -> str:
 def ejecutar_escenario(escenario, sesion) -> tuple:
     set_seeds(escenario.seed)
 
-    train_ds, val_ds, class_names = load_dataset_bd(
-        use_augmentation=escenario.search_space_json.get("use_augmentation", [True])[0]
-    )
+    train_ds, val_ds, class_names = load_dataset_bd()
     num_classes = len(class_names)
 
     experimento_id = crear_experimento(sesion, escenario.nombre)
@@ -118,14 +117,19 @@ def ejecutar_escenario(escenario, sesion) -> tuple:
     mejor_fitness = fitness_history[-1]
 
     mejor_modelo = build_model(mejor_individuo, num_classes)
+    ds_train_final, ds_val_final = preparar_datasets(mejor_individuo, train_ds, val_ds)
     mejor_history = mejor_modelo.fit(
-        train_ds,
-        validation_data=val_ds,
+        ds_train_final,
+        validation_data=ds_val_final,
         epochs=mejor_individuo["epochs"],
         verbose=1,
     )
-    mejor_modelo_id = guardar_individuo_bd(sesion, experimento_id, mejor_individuo, mejor_history)
-    guardar_mejor_modelo_bd(sesion, mejor_modelo_id, mejor_modelo)
+    print("[main] Serializando mejor modelo...")
+    mejor_modelo_bytes = serializar_modelo(mejor_modelo)
+    guardar_individuo_bd(
+        sesion, experimento_id, mejor_individuo, mejor_history,
+        modelo_bytes=mejor_modelo_bytes,
+    )
 
     return experimento_id, mejor_fitness, mejor_individuo, fitness_history
 

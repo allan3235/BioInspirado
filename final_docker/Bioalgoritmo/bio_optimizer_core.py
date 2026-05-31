@@ -1,8 +1,14 @@
 import io
+import queue
 import random
 import sys
 import os
+import tempfile
+import threading
+import time
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Optional
 
 import numpy as np
 import tensorflow as tf
@@ -110,6 +116,133 @@ def _import_bd_models():
     return Experimento, Modelo, Metrica, Hiperparametro
 
 
+def _nueva_sesion():
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from ManejoDeDatos.basededatos import obtener_sesion
+    return obtener_sesion()
+
+
+# ─── Cola de reintentos ───────────────────────────────────────────────────────
+
+@dataclass
+class _TareaGuardado:
+    experimento_id: int
+    individuo: dict
+    historia: dict
+    arquitectura: str
+    modelo_bytes: Optional[bytes] = None
+
+
+_cola_reintentos: queue.Queue = queue.Queue()
+_worker_iniciado = False
+_worker_lock = threading.Lock()
+
+
+def _insertar_en_bd(sesion, tarea: _TareaGuardado) -> int:
+    """Lógica de inserción compartida entre la ruta normal y los reintentos."""
+    _, Modelo, Metrica, Hiperparametro = _import_bd_models()
+
+    modelo = Modelo(
+        experimento_id=tarea.experimento_id,
+        arquitectura=tarea.arquitectura,
+        fecha=datetime.utcnow(),
+    )
+    if tarea.modelo_bytes:
+        modelo.archivo = tarea.modelo_bytes
+        modelo.formato = "keras"
+    sesion.add(modelo)
+    sesion.flush()
+
+    sesion.add(Hiperparametro(
+        modelo_id=modelo.id,
+        tasa_aprendizaje=tarea.individuo.get("learning_rate"),
+        tamano_lote=tarea.individuo.get("batch_size"),
+        optimizador=tarea.individuo.get("optimizer"),
+        epocas=tarea.individuo.get("epochs"),
+        aumento_datos=tarea.individuo.get("use_augmentation"),
+        neuronas_densas=tarea.individuo.get("dense_units"),
+        tasa_dropout=tarea.individuo.get("dropout_rate"),
+        filtros_conv=tarea.individuo.get("filters"),
+    ))
+
+    hist = tarea.historia
+    for epoch_idx in range(len(hist.get("loss", []))):
+        sesion.add(Metrica(
+            modelo_id=modelo.id,
+            epoca=epoch_idx + 1,
+            perdida_entrenamiento=_safe_get(hist, "loss", epoch_idx),
+            perdida_validacion=_safe_get(hist, "val_loss", epoch_idx),
+            precision_entrenamiento=_safe_get(hist, "accuracy", epoch_idx),
+            precision_validacion=_safe_get(hist, "val_accuracy", epoch_idx),
+        ))
+
+    sesion.commit()
+    return modelo.id
+
+
+def _worker_reintentos():
+    pendientes: list = []
+    while True:
+        time.sleep(60)
+        while True:
+            try:
+                pendientes.append(_cola_reintentos.get_nowait())
+            except queue.Empty:
+                break
+
+        if not pendientes:
+            continue
+
+        etiqueta = "modelo(s)" if pendientes else ""
+        print(f"[reintento BD] {len(pendientes)} {etiqueta} pendiente(s) — intentando guardar...")
+        exitosas = []
+        for i, tarea in enumerate(pendientes):
+            sesion = None
+            try:
+                sesion = _nueva_sesion()
+                modelo_id = _insertar_en_bd(sesion, tarea)
+                exitosas.append(i)
+                tipo = "mejor modelo" if tarea.modelo_bytes else "individuo"
+                print(f"[reintento BD] OK ({tipo}) — experimento_id={tarea.experimento_id} modelo_id={modelo_id}")
+            except Exception as e:
+                tipo = "mejor modelo" if tarea.modelo_bytes else "individuo"
+                print(f"[reintento BD] Error ({tipo}) experimento_id={tarea.experimento_id} — reintentando en 60s: {e}")
+                if sesion:
+                    try:
+                        sesion.rollback()
+                    except Exception:
+                        pass
+            finally:
+                if sesion:
+                    try:
+                        sesion.close()
+                    except Exception:
+                        pass
+
+        for i in sorted(exitosas, reverse=True):
+            pendientes.pop(i)
+
+
+def _iniciar_worker():
+    global _worker_iniciado
+    with _worker_lock:
+        if not _worker_iniciado:
+            t = threading.Thread(target=_worker_reintentos, daemon=True, name="bd-retry-worker")
+            t.start()
+            _worker_iniciado = True
+
+
+def _encolar(tarea: _TareaGuardado):
+    _cola_reintentos.put(tarea)
+    _iniciar_worker()
+    tipo = "mejor modelo" if tarea.modelo_bytes else "individuo"
+    print(f"[guardar BD] Encolado para reintento ({tipo}) — experimento_id={tarea.experimento_id}")
+
+
+# ─── API pública de persistencia ─────────────────────────────────────────────
+
 def crear_experimento(sesion, nombre: str) -> int:
     Experimento, _, _, _ = _import_bd_models()
     experimento = Experimento(nombre=nombre, fecha=datetime.utcnow())
@@ -119,52 +252,48 @@ def crear_experimento(sesion, nombre: str) -> int:
     return experimento.id
 
 
+def serializar_modelo(keras_model: tf.keras.Model) -> Optional[bytes]:
+    """Serializa un modelo Keras a bytes .keras. Retorna None si falla."""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".keras", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            keras_model.save(tmp_path)
+            with open(tmp_path, "rb") as f:
+                return f.read()
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[serializar_modelo] Error: {e}")
+        return None
+
+
 def guardar_individuo_bd(sesion, experimento_id: int, individuo: dict, history,
-                         arquitectura: str = "CNN") -> int:
+                         arquitectura: str = "CNN",
+                         modelo_bytes: Optional[bytes] = None) -> int:
+    hist = history.history if hasattr(history, "history") else history
+    tarea = _TareaGuardado(
+        experimento_id=experimento_id,
+        individuo=dict(individuo),
+        historia=dict(hist),
+        arquitectura=arquitectura,
+        modelo_bytes=modelo_bytes,
+    )
     if sesion is None:
+        _encolar(tarea)
         return 0
     try:
-        _, Modelo, Metrica, Hiperparametro = _import_bd_models()
-
-        modelo = Modelo(
-            experimento_id=experimento_id,
-            arquitectura=arquitectura,
-            fecha=datetime.utcnow(),
-        )
-        sesion.add(modelo)
-        sesion.flush()
-
-        sesion.add(Hiperparametro(
-            modelo_id=modelo.id,
-            tasa_aprendizaje=individuo.get("learning_rate"),
-            tamano_lote=individuo.get("batch_size"),
-            optimizador=individuo.get("optimizer"),
-            epocas=individuo.get("epochs"),
-            aumento_datos=individuo.get("use_augmentation"),
-            neuronas_densas=individuo.get("dense_units"),
-            tasa_dropout=individuo.get("dropout_rate"),
-            filtros_conv=individuo.get("filters"),
-        ))
-
-        hist = history.history if hasattr(history, "history") else history
-        for epoch_idx in range(len(hist.get("loss", []))):
-            sesion.add(Metrica(
-                modelo_id=modelo.id,
-                epoca=epoch_idx + 1,
-                perdida_entrenamiento=_safe_get(hist, "loss", epoch_idx),
-                perdida_validacion=_safe_get(hist, "val_loss", epoch_idx),
-                precision_entrenamiento=_safe_get(hist, "accuracy", epoch_idx),
-                precision_validacion=_safe_get(hist, "val_accuracy", epoch_idx),
-            ))
-
-        sesion.commit()
-        return modelo.id
+        return _insertar_en_bd(sesion, tarea)
     except Exception as e:
         print(f"[guardar_individuo_bd] Error: {e}")
         try:
             sesion.rollback()
         except Exception:
             pass
+        _encolar(tarea)
         return 0
 
 
@@ -173,42 +302,44 @@ def _safe_get(hist: dict, key: str, idx: int):
     return float(vals[idx]) if idx < len(vals) else None
 
 
-def guardar_mejor_modelo_bd(sesion, modelo_id: int, keras_model: tf.keras.Model) -> None:
-    if sesion is None:
-        return
-    try:
-        import tempfile
-        _, Modelo, _, _ = _import_bd_models()
+# ─── Preparación de datasets por individuo ───────────────────────────────────
 
-        with tempfile.NamedTemporaryFile(suffix=".keras", delete=False) as tmp:
-            tmp_path = tmp.name
-        try:
-            keras_model.save(tmp_path)
-            with open(tmp_path, "rb") as f:
-                datos = f.read()
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
+def preparar_datasets(individuo: dict, train_ds, val_ds):
+    """
+    Aplica batch_size y use_augmentation del individuo a los datasets crudos
+    retornados por load_dataset_bd (sin batch, sin augmentation).
+    """
+    batch_size = individuo.get("batch_size", 32)
+    use_aug    = individuo.get("use_augmentation", True)
+    AUTOTUNE   = tf.data.AUTOTUNE
 
-        modelo = sesion.get(Modelo, modelo_id)
-        if modelo is not None:
-            modelo.archivo = datos
-            modelo.formato = "keras"
-            sesion.commit()
-    except Exception as e:
-        print(f"[guardar_mejor_modelo_bd] Error: {e}")
+    ds_train = train_ds
+    if use_aug:
+        augment = tf.keras.Sequential([
+            tf.keras.layers.RandomFlip("horizontal"),
+            tf.keras.layers.RandomRotation(0.1),
+            tf.keras.layers.RandomZoom(0.1),
+            tf.keras.layers.RandomTranslation(0.1, 0.1),
+        ])
+        ds_train = ds_train.map(
+            lambda x, y: (augment(x, training=True), y),
+            num_parallel_calls=AUTOTUNE,
+        )
+
+    ds_train = ds_train.batch(batch_size).prefetch(AUTOTUNE)
+    ds_val   = val_ds.batch(batch_size).prefetch(AUTOTUNE)
+    return ds_train, ds_val
 
 
 # ─── Evaluación ──────────────────────────────────────────────────────────────
 
 def evaluate_individual(individuo, train_ds, val_ds, num_classes, experimento_id, sesion) -> float:
     try:
+        ds_train, ds_val = preparar_datasets(individuo, train_ds, val_ds)
         model = build_model(individuo, num_classes)
         history = model.fit(
-            train_ds,
-            validation_data=val_ds,
+            ds_train,
+            validation_data=ds_val,
             epochs=individuo["epochs"],
             verbose=2,
         )

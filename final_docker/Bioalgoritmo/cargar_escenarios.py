@@ -6,18 +6,47 @@ Inserta los escenarios en la BD. Luego cada contenedor toma uno automáticamente
 Uso:
     python Bioalgoritmo/cargar_escenarios.py
 
+Variables de entorno (.env):
+    test=1  → inserta solo el escenario de prueba (1 epoch, 2 individuos)
+    test=0  → inserta todos los escenarios reales
+
 Luego:
     docker compose up --scale worker=3
 """
 
 import sys
 import os
+from dotenv import load_dotenv
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+load_dotenv(os.path.join(_REPO_ROOT, "ManejoDeDatos", ".env"))
+
 from ManejoDeDatos.basededatos import iniciar_bd, obtener_sesion, cargar_escenarios
+
+ESCENARIO_TEST = [
+    {
+        "nombre": "TEST_verificacion_bd",
+        "algoritmo": "GA",
+        "seed": 0,
+        "poblacion_size": 2,
+        "num_generaciones": 1,
+        "prob_mutacion": 0.2,
+        "prob_cruce": 0.8,
+        "search_space_json": {
+            "learning_rate":    [1e-3],
+            "batch_size":       [32],
+            "optimizer":        ["adam"],
+            "epochs":           [1],
+            "dropout_rate":     [0.3],
+            "dense_units":      [64],
+            "filters":          [16],
+            "use_augmentation": [False],
+        },
+    },
+]
 
 ESCENARIOS = [
     # ── Escenario 1: GA agresivo, learning rates altos ───────────────────────
@@ -1459,12 +1488,20 @@ ESCENARIOS = [
 
 
 if __name__ == "__main__":
+    modo_test = os.getenv("test", "0").strip() == "1"
+
     print("Inicializando tablas...")
     iniciar_bd()
 
     sesion = obtener_sesion()
-    cargar_escenarios(sesion, ESCENARIOS)
-    sesion.close()
 
-    print(f"{len(ESCENARIOS)} escenarios cargados.")
-    print("Ahora lanza los contenedores: docker compose up --scale worker=70")
+    if modo_test:
+        cargar_escenarios(sesion, ESCENARIO_TEST)
+        sesion.close()
+        print("Modo TEST activo — escenario de prueba cargado: 2 individuos, 1 época.")
+        print("Verifica en la BD que se guardó el modelo y luego lanza los escenarios reales con test=0.")
+    else:
+        cargar_escenarios(sesion, ESCENARIOS)
+        sesion.close()
+        print(f"{len(ESCENARIOS)} escenarios cargados.")
+        print("Ahora lanza los contenedores: docker compose up --scale worker=70")
