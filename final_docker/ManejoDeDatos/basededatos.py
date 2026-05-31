@@ -8,7 +8,11 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,
 
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
-engine = create_engine(os.getenv("base_datos"))
+engine = create_engine(
+    os.getenv("base_datos"),
+    pool_pre_ping=True,
+    pool_recycle=1800,
+)
 
 
 class Base(DeclarativeBase):

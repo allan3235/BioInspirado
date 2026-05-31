@@ -299,8 +299,16 @@ def guardar_individuo_bd(sesion, experimento_id: int, individuo: dict, history,
             sesion.rollback()
         except Exception:
             pass
-        _encolar(tarea)
-        return 0
+        # Reintento inmediato con sesión nueva (la original puede estar muerta)
+        try:
+            sesion_nueva = _nueva_sesion()
+            resultado = _insertar_en_bd(sesion_nueva, tarea)
+            sesion_nueva.close()
+            return resultado
+        except Exception as e2:
+            print(f"[guardar_individuo_bd] Reintento fallido: {e2}")
+            _encolar(tarea)
+            return 0
 
 
 def _safe_get(hist: dict, key: str, idx: int):
