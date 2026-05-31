@@ -10,5 +10,10 @@ services:
     deploy:
       replicas: 7
       resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
         limits:
           memory: 4000M
