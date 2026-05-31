@@ -70,6 +70,7 @@ class Hiperparametro(Base):
     neuronas_densas: Mapped[Optional[int]]
     neuronas_finales: Mapped[Optional[int]]
     tasa_dropout: Mapped[Optional[float]]
+    filtros_conv: Mapped[Optional[int]]
 
     modelo: Mapped["Modelo"] = relationship(back_populates="hiperparametros")
 

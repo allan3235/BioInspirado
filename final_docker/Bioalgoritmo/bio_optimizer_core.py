@@ -150,6 +150,9 @@ def guardar_individuo_bd(sesion, experimento_id: int, individuo: dict, history,
             optimizador=individuo.get("optimizer"),
             epocas=individuo.get("epochs"),
             aumento_datos=individuo.get("use_augmentation"),
+            neuronas_densas=individuo.get("dense_units"),
+            tasa_dropout=individuo.get("dropout_rate"),
+            filtros_conv=individuo.get("filters"),
         ))
 
         hist = history.history if hasattr(history, "history") else history
