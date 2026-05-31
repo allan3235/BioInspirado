@@ -44,18 +44,8 @@ def build_model(individuo: dict, num_classes: int) -> tf.keras.Model:
         )
 
     filters = individuo.get("filters", 32)
-    use_aug = individuo.get("use_augmentation", False)
 
-    layers = []
-
-    if use_aug:
-        layers += [
-            tf.keras.layers.RandomFlip("horizontal"),
-            tf.keras.layers.RandomRotation(0.1),
-            tf.keras.layers.RandomZoom(0.1),
-        ]
-
-    layers += [
+    model = tf.keras.Sequential([
         tf.keras.layers.Conv2D(filters, (3, 3), activation="relu",
                                input_shape=(224, 224, 3), padding="same"),
         tf.keras.layers.BatchNormalization(),
@@ -63,13 +53,14 @@ def build_model(individuo: dict, num_classes: int) -> tf.keras.Model:
         tf.keras.layers.Conv2D(filters * 2, (3, 3), activation="relu", padding="same"),
         tf.keras.layers.BatchNormalization(),
         tf.keras.layers.MaxPooling2D(2, 2),
+        tf.keras.layers.Conv2D(filters * 4, (3, 3), activation="relu", padding="same"),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.MaxPooling2D(2, 2),
         tf.keras.layers.GlobalAveragePooling2D(),
         tf.keras.layers.Dense(individuo["dense_units"], activation="relu"),
         tf.keras.layers.Dropout(individuo["dropout_rate"]),
         tf.keras.layers.Dense(num_classes, activation="softmax"),
-    ]
-
-    model = tf.keras.Sequential(layers)
+    ])
     optimizer_cls = _OPTIMIZERS_MAP[optimizer_name]
     model.compile(
         optimizer=optimizer_cls(learning_rate=individuo["learning_rate"]),
