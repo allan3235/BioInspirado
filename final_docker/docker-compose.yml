@@ -2,18 +2,20 @@ services:
   worker:
     build: .
     restart: on-failure
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - render
     environment:
       base_datos: ${base_datos}
       TF_CPP_MIN_LOG_LEVEL: "3"
       TF_ENABLE_ONEDNN_OPTS: "0"
+      HSA_OVERRIDE_GFX_VERSION: "11.0.0"
     mem_limit: 4000m
     deploy:
       replicas: 7
       resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
         limits:
           memory: 4000M
