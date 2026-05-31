@@ -10,6 +10,7 @@ services:
       - render
     environment:
       base_datos: ${base_datos}
+      GPU: ${GPU:-1}
       TF_CPP_MIN_LOG_LEVEL: "3"
       TF_ENABLE_ONEDNN_OPTS: "0"
       HSA_OVERRIDE_GFX_VERSION: "11.0.0"

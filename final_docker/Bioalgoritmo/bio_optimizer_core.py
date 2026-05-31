@@ -68,9 +68,12 @@ def build_model(individuo: dict, num_classes: int) -> tf.keras.Model:
         tf.keras.layers.Dense(num_classes, activation="softmax"),
     ])
     optimizer_cls = _OPTIMIZERS_MAP[optimizer_name]
+    opt_kwargs = {"learning_rate": individuo["learning_rate"]}
+    if optimizer_name == "adamw":
+        opt_kwargs["weight_decay"] = 1e-4
     model.compile(
-        optimizer=optimizer_cls(learning_rate=individuo["learning_rate"]),
-        loss="categorical_crossentropy",
+        optimizer=optimizer_cls(**opt_kwargs),
+        loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.1),
         metrics=["accuracy"],
     )
     return model
@@ -98,9 +101,12 @@ def build_model_vgg16(individuo: dict, num_classes: int) -> tf.keras.Model:
     ])
 
     optimizer_cls = _OPTIMIZERS_MAP[optimizer_name]
+    opt_kwargs = {"learning_rate": individuo["learning_rate"]}
+    if optimizer_name == "adamw":
+        opt_kwargs["weight_decay"] = 1e-4
     model.compile(
-        optimizer=optimizer_cls(learning_rate=individuo["learning_rate"]),
-        loss="categorical_crossentropy",
+        optimizer=optimizer_cls(**opt_kwargs),
+        loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.1),
         metrics=["accuracy"],
     )
     return model
