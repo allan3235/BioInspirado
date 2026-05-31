@@ -516,19 +516,31 @@ def load_dataset_tfdata():
 
 
 # ─── 5. Carga desde Base de Datos ────────────────────────────────────────────
-def _consultar_imagenes(uso: str):
-    """Consulta imagenes de la BD filtradas por uso y retorna (imagenes, etiquetas)."""
+def _consultar_clases_y_conteos(uso: str):
+    """Retorna (class_names, total) sin cargar imágenes en memoria."""
     sesion = obtener_sesion()
-
     resultados = (
-        sesion.query(Imagen.imagen, Imagen.enfermedad)
+        sesion.query(Imagen.enfermedad)
         .join(ImagenUso, ImagenUso.imagen_id == Imagen.id)
         .filter(ImagenUso.uso == uso)
         .all()
     )
-
     sesion.close()
-    return resultados
+    enfermedades = [e for (e,) in resultados]
+    return sorted(set(enfermedades)), len(enfermedades)
+
+
+def _consultar_ids(uso: str):
+    """Retorna solo los IDs de imagen para el uso dado."""
+    sesion = obtener_sesion()
+    ids = (
+        sesion.query(Imagen.id)
+        .join(ImagenUso, ImagenUso.imagen_id == Imagen.id)
+        .filter(ImagenUso.uso == uso)
+        .all()
+    )
+    sesion.close()
+    return [i for (i,) in ids]
 
 
 def _decodificar_imagen(datos_binarios: bytes) -> np.ndarray:
@@ -542,45 +554,51 @@ def _decodificar_imagen(datos_binarios: bytes) -> np.ndarray:
 
 def load_dataset_bd():
     """
-    Carga el dataset desde PostgreSQL y retorna (train_ds, val_ds, class_names).
+    Carga el dataset desde PostgreSQL con streaming por lotes (chunk_size imágenes
+    a la vez) para evitar cargar ~5 GB en RAM de una sola vez.
 
-    Los datasets se retornan SIN batch y SIN augmentation para que cada individuo
-    aplique sus propios hiperparametros via preparar_datasets().
-
-    Retorna
-    -------
-    train_ds   : tf.data.Dataset de entrenamiento (shuffled, sin batch)
-    val_ds     : tf.data.Dataset de validacion (sin batch)
-    class_names: lista de nombres de clases ordenada alfabeticamente
+    Retorna (train_ds, val_ds, class_names) SIN batch ni augmentation.
     """
-    print("[INFO] Cargando imagenes de entrenamiento desde la BD...")
-    train_raw = _consultar_imagenes("entrenar")
-    print("[INFO] Cargando imagenes de validacion desde la BD...")
-    val_raw   = _consultar_imagenes("validar")
+    CHUNK = 200  # imágenes por consulta
 
-    class_names = sorted(set(e for _, e in train_raw))
+    print("[INFO] Consultando clases y conteos desde la BD...")
+    class_names, n_train = _consultar_clases_y_conteos("entrenar")
+    _,           n_val   = _consultar_clases_y_conteos("validar")
     clase_a_idx = {c: i for i, c in enumerate(class_names)}
     num_clases  = len(class_names)
 
-    def procesar(registros):
-        imagenes = []
-        etiquetas = []
-        for datos, enfermedad in registros:
-            img = _decodificar_imagen(datos)
-            label = np.zeros(num_clases, dtype=np.float32)
-            label[clase_a_idx[enfermedad]] = 1.0
-            imagenes.append(img)
-            etiquetas.append(label)
-        return np.array(imagenes), np.array(etiquetas)
-
-    X_train, y_train = procesar(train_raw)
-    X_val,   y_val   = procesar(val_raw)
-
-    train_ds = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(1000, seed=SEED)
-    val_ds   = tf.data.Dataset.from_tensor_slices((X_val,   y_val))
-
     print(f"[INFO] Clases ({num_clases}): {class_names}")
-    print(f"[INFO] Train: {len(X_train)} | Val: {len(X_val)}")
+    print(f"[INFO] Train: {n_train} | Val: {n_val}")
+
+    train_ids = _consultar_ids("entrenar")
+    val_ids   = _consultar_ids("validar")
+
+    def generador(ids):
+        for inicio in range(0, len(ids), CHUNK):
+            bloque = ids[inicio: inicio + CHUNK]
+            sesion = obtener_sesion()
+            registros = (
+                sesion.query(Imagen.imagen, Imagen.enfermedad)
+                .filter(Imagen.id.in_(bloque))
+                .all()
+            )
+            sesion.close()
+            for datos, enfermedad in registros:
+                img   = _decodificar_imagen(datos)
+                label = np.zeros(num_clases, dtype=np.float32)
+                label[clase_a_idx[enfermedad]] = 1.0
+                yield img, label
+
+    sig = (
+        tf.TensorSpec(shape=(*IMG_SIZE, 3), dtype=tf.float32),
+        tf.TensorSpec(shape=(num_clases,),  dtype=tf.float32),
+    )
+
+    train_ds = (
+        tf.data.Dataset.from_generator(lambda: generador(train_ids), output_signature=sig)
+        .shuffle(1000, seed=SEED, reshuffle_each_iteration=True)
+    )
+    val_ds = tf.data.Dataset.from_generator(lambda: generador(val_ids), output_signature=sig)
 
     return train_ds, val_ds, class_names
 

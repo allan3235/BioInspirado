@@ -288,27 +288,28 @@ def guardar_individuo_bd(sesion, experimento_id: int, individuo: dict, history,
         arquitectura=arquitectura,
         modelo_bytes=modelo_bytes,
     )
-    if sesion is None:
-        _encolar(tarea)
-        return 0
+    # Siempre usamos sesión nueva: la sesión pasada puede llevar abierta todo
+    # el tiempo que duró el entrenamiento y la conexión subyacente ya está muerta.
+    sesion_nueva = None
     try:
-        return _insertar_en_bd(sesion, tarea)
+        sesion_nueva = _nueva_sesion()
+        resultado = _insertar_en_bd(sesion_nueva, tarea)
+        return resultado
     except Exception as e:
         print(f"[guardar_individuo_bd] Error: {e}")
         try:
-            sesion.rollback()
+            if sesion_nueva:
+                sesion_nueva.rollback()
         except Exception:
             pass
-        # Reintento inmediato con sesión nueva (la original puede estar muerta)
+        _encolar(tarea)
+        return 0
+    finally:
         try:
-            sesion_nueva = _nueva_sesion()
-            resultado = _insertar_en_bd(sesion_nueva, tarea)
-            sesion_nueva.close()
-            return resultado
-        except Exception as e2:
-            print(f"[guardar_individuo_bd] Reintento fallido: {e2}")
-            _encolar(tarea)
-            return 0
+            if sesion_nueva:
+                sesion_nueva.close()
+        except Exception:
+            pass
 
 
 def _safe_get(hist: dict, key: str, idx: int):

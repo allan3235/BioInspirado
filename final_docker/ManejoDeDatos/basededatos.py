@@ -12,6 +12,12 @@ engine = create_engine(
     os.getenv("base_datos"),
     pool_pre_ping=True,
     pool_recycle=1800,
+    connect_args={
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5,
+    },
 )
 
 
