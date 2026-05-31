@@ -18,6 +18,7 @@ COPY ManejoDeDatos/ ./ManejoDeDatos/
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
+ENV GPU=1
 
 WORKDIR /app/Bioalgoritmo
 CMD ["python", "main.py"]

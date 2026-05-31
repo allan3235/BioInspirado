@@ -10,12 +10,18 @@ Cada contenedor:
 Variables de entorno:
   base_datos  → postgresql://user:pass@host:5432/dbname
   HOSTNAME    → identificador del nodo (lo asigna Docker automáticamente)
+  GPU         → 1/true activa GPU (default), 0/false la desactiva (CPU only)
 """
 
 import os
 import sys
 import time
 from datetime import timedelta
+
+# Variable de entorno GPU=1/true activa GPU, GPU=0/false la apaga
+_gpu_env = os.environ.get("GPU", "1").strip().lower()
+if _gpu_env in ("0", "false", "no"):
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
