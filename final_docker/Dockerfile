@@ -1,5 +1,5 @@
-FROM tensorflow/tensorflow:2.21.0
-# GPU: FROM tensorflow/tensorflow:2.21.0-gpu
+#FROM tensorflow/tensorflow:2.21.0
+FROM tensorflow/tensorflow:2.21.0-gpu
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq-dev \
