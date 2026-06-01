@@ -52,8 +52,8 @@ def build_model(individuo: dict, num_classes: int) -> tf.keras.Model:
     filters = individuo.get("filters", 32)
 
     model = tf.keras.Sequential([
-        tf.keras.layers.Conv2D(filters, (3, 3), activation="relu",
-                               input_shape=(224, 224, 3), padding="same"),
+        tf.keras.Input(shape=(224, 224, 3)),
+        tf.keras.layers.Conv2D(filters, (3, 3), activation="relu", padding="same"),
         tf.keras.layers.BatchNormalization(),
         tf.keras.layers.MaxPooling2D(2, 2),
         tf.keras.layers.Conv2D(filters * 2, (3, 3), activation="relu", padding="same"),

@@ -31,13 +31,13 @@ from bio_optimizer_core import (
 
 INDIVIDUO_PRUEBA = {
     "epochs":        1,
-    "batch_size":    16,
-    "learning_rate": 1e-3,
-    "optimizer":     "adam",
-    "dense_units":   64,
+    "batch_size":    64,
+    "learning_rate": 1e-4,
+    "optimizer":     "adamw",
+    "dense_units":   512,
     "dropout_rate":  0.3,
-    "filters":       8,
-    "use_augmentation": False,
+    "filters":       32,
+    "use_augmentation": True,
 }
 
 
