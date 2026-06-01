@@ -258,6 +258,102 @@ def crear_experimento(sesion, nombre: str) -> int:
     return experimento.id
 
 
+def _fig_to_bytes(fig) -> bytes:
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=100)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
+def generar_diagnostico_imagenes(model, history, val_ds, num_classes: int) -> dict:
+    from sklearn.metrics import confusion_matrix, f1_score, recall_score
+
+    hist = history.history if hasattr(history, "history") else history
+    epochs = range(1, len(hist.get("loss", [])) + 1)
+
+    fig, ax = plt.subplots()
+    ax.plot(epochs, hist["loss"], label="Entrenamiento")
+    ax.plot(epochs, hist["val_loss"], label="Validación")
+    ax.set_title("Curva de Pérdida")
+    ax.set_xlabel("Época")
+    ax.set_ylabel("Pérdida")
+    ax.legend()
+    curva_perdida = _fig_to_bytes(fig)
+
+    fig, ax = plt.subplots()
+    ax.plot(epochs, hist["accuracy"], label="Entrenamiento")
+    ax.plot(epochs, hist["val_accuracy"], label="Validación")
+    ax.set_title("Curva de Precisión")
+    ax.set_xlabel("Época")
+    ax.set_ylabel("Precisión")
+    ax.legend()
+    curva_precision = _fig_to_bytes(fig)
+
+    preds = model.predict(val_ds, verbose=0)
+    y_pred = np.argmax(preds, axis=1)
+    y_true = np.concatenate([y for _, y in val_ds], axis=0)
+    if len(y_true.shape) > 1:
+        y_true = np.argmax(y_true, axis=1)
+    y_true = y_true.astype(int)
+
+    cm = confusion_matrix(y_true, y_pred, labels=list(range(num_classes)))
+    fig, ax = plt.subplots(figsize=(max(6, num_classes), max(5, num_classes)))
+    im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
+    fig.colorbar(im, ax=ax)
+    ax.set_title("Matriz de Confusión")
+    ax.set_xlabel("Predicción")
+    ax.set_ylabel("Real")
+    ax.set_xticks(np.arange(num_classes))
+    ax.set_yticks(np.arange(num_classes))
+    thresh = cm.max() / 2.0
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            ax.text(j, i, str(cm[i, j]), ha="center", va="center",
+                    color="white" if cm[i, j] > thresh else "black", fontsize=8)
+    plt.tight_layout()
+    matriz_confusion_bytes = _fig_to_bytes(fig)
+
+    labels = list(range(num_classes))
+    recall_vals = recall_score(y_true, y_pred, labels=labels, average=None, zero_division=0)
+    f1_vals = f1_score(y_true, y_pred, labels=labels, average=None, zero_division=0)
+    x = np.arange(num_classes)
+    width = 0.35
+    fig, ax = plt.subplots(figsize=(max(8, num_classes * 0.8), 5))
+    ax.bar(x - width / 2, recall_vals, width, label="Recall")
+    ax.bar(x + width / 2, f1_vals, width, label="F1-Score")
+    ax.set_title("Recall y F1-Score por Clase")
+    ax.set_xlabel("Clase")
+    ax.set_ylabel("Score")
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"Clase {i}" for i in range(num_classes)], rotation=45)
+    ax.set_ylim(0, 1.1)
+    ax.legend()
+    plt.tight_layout()
+    curva_recall_f1 = _fig_to_bytes(fig)
+
+    return {
+        "curva_perdida": curva_perdida,
+        "curva_precision": curva_precision,
+        "matriz_confusion": matriz_confusion_bytes,
+        "curva_recall_f1": curva_recall_f1,
+    }
+
+
+def _guardar_diagnostico_bd(modelo_id: int, model, history, val_ds, num_classes: int) -> None:
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from ManejoDeDatos.basededatos import guardar_diagnostico
+
+    diags = generar_diagnostico_imagenes(model, history, val_ds, num_classes)
+    sesion = _nueva_sesion()
+    try:
+        guardar_diagnostico(sesion, modelo_id, **diags)
+    finally:
+        sesion.close()
+
+
 def serializar_modelo(keras_model: tf.keras.Model) -> Optional[bytes]:
     """Serializa un modelo Keras a bytes .keras. Retorna None si falla."""
     try:
@@ -359,7 +455,12 @@ def evaluate_individual(individuo, train_ds, val_ds, num_classes, experimento_id
             verbose=2,
         )
         try:
-            guardar_individuo_bd(sesion, experimento_id, individuo, history)
+            modelo_id = guardar_individuo_bd(sesion, experimento_id, individuo, history)
+            if modelo_id:
+                try:
+                    _guardar_diagnostico_bd(modelo_id, model, history, ds_val, num_classes)
+                except Exception as diag_err:
+                    print(f"[evaluate_individual] Advertencia diagnóstico: {diag_err}")
         except Exception as bd_err:
             print(f"[evaluate_individual] Advertencia BD: {bd_err}")
         return float(max(history.history["val_accuracy"]))

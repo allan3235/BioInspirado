@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, ForeignKey, String, DateTime, LargeBinary, Text, JSON
+from sqlalchemy import create_engine, ForeignKey, String, DateTime, LargeBinary, Text, JSON, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
 
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
@@ -87,6 +87,7 @@ class Hiperparametro(Base):
 
 class ResultadoDiagnostico(Base):
     __tablename__ = "resultados_diagnostico"
+    __table_args__ = (UniqueConstraint("modelo_id", name="uq_diagnostico_modelo"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     modelo_id: Mapped[int] = mapped_column(ForeignKey("modelos.id"))
@@ -94,6 +95,7 @@ class ResultadoDiagnostico(Base):
     curva_precision: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
     matriz_confusion: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
     curva_roc: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
+    curva_recall_f1: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
     formato: Mapped[str] = mapped_column(String(10), default="png")
     fecha: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -275,18 +277,35 @@ def guardar_diagnostico(sesion: Session, modelo_id: int,
                         curva_precision: Optional[bytes] = None,
                         matriz_confusion: Optional[bytes] = None,
                         curva_roc: Optional[bytes] = None,
+                        curva_recall_f1: Optional[bytes] = None,
                         formato: str = "png") -> "ResultadoDiagnostico":
-    diag = ResultadoDiagnostico(
-        modelo_id=modelo_id,
-        curva_perdida=curva_perdida,
-        curva_precision=curva_precision,
-        matriz_confusion=matriz_confusion,
-        curva_roc=curva_roc,
-        formato=formato,
-    )
-    sesion.add(diag)
+    from sqlalchemy import select
+    diag = sesion.execute(
+        select(ResultadoDiagnostico).where(ResultadoDiagnostico.modelo_id == modelo_id)
+    ).scalar_one_or_none()
+    if diag is None:
+        diag = ResultadoDiagnostico(modelo_id=modelo_id, formato=formato)
+        sesion.add(diag)
+    diag.curva_perdida = curva_perdida
+    diag.curva_precision = curva_precision
+    diag.matriz_confusion = matriz_confusion
+    diag.curva_roc = curva_roc
+    diag.curva_recall_f1 = curva_recall_f1
+    diag.fecha = datetime.utcnow()
     sesion.commit()
     return diag
+
+
+def obtener_diagnosticos_experimento(sesion: Session, experimento_id: int) -> list:
+    """Retorna todos los diagnósticos del experimento ordenados por fecha de creación del modelo."""
+    from sqlalchemy import select
+    stmt = (
+        select(ResultadoDiagnostico)
+        .join(Modelo, Modelo.id == ResultadoDiagnostico.modelo_id)
+        .where(Modelo.experimento_id == experimento_id)
+        .order_by(Modelo.fecha.asc())
+    )
+    return sesion.execute(stmt).scalars().all()
 
 
 def encolar_tareas(sesion: Session, experimento_id: int, algoritmo: str,

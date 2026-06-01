@@ -60,10 +60,16 @@ MIGRACIONES = [
         curva_precision BYTEA,
         matriz_confusion BYTEA,
         curva_roc BYTEA,
+        curva_recall_f1 BYTEA,
         formato VARCHAR(10) DEFAULT 'png',
         fecha TIMESTAMP DEFAULT NOW()
     )
     """,
+    # resultados_diagnostico — columna recall/f1 para tablas ya existentes
+    "ALTER TABLE resultados_diagnostico ADD COLUMN IF NOT EXISTS curva_recall_f1 BYTEA",
+
+    # resultados_diagnostico — garantiza un solo diagnóstico por modelo
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_diagnostico_modelo ON resultados_diagnostico (modelo_id)",
 ]
 
 
