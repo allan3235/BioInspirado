@@ -279,6 +279,7 @@ def generar_diagnostico_imagenes(model, history, val_ds, num_classes: int) -> di
     ax.set_xlabel("Época")
     ax.set_ylabel("Pérdida")
     ax.legend()
+    plt.tight_layout()
     curva_perdida = _fig_to_bytes(fig)
 
     fig, ax = plt.subplots()
@@ -288,11 +289,12 @@ def generar_diagnostico_imagenes(model, history, val_ds, num_classes: int) -> di
     ax.set_xlabel("Época")
     ax.set_ylabel("Precisión")
     ax.legend()
+    plt.tight_layout()
     curva_precision = _fig_to_bytes(fig)
 
     preds = model.predict(val_ds, verbose=0)
     y_pred = np.argmax(preds, axis=1)
-    y_true = np.concatenate([y for _, y in val_ds], axis=0)
+    y_true = np.concatenate([y.numpy() for _, y in val_ds], axis=0)
     if len(y_true.shape) > 1:
         y_true = np.argmax(y_true, axis=1)
     y_true = y_true.astype(int)
