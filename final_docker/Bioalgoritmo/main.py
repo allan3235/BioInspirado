@@ -44,6 +44,7 @@ from bio_optimizer_core import (
     GeneticAlgorithm,
     ParticleSwarmOptimizer,
     guardar_individuo_bd,
+    guardar_diagnostico_bd,
     serializar_modelo,
     build_model,
     crear_experimento,
@@ -126,10 +127,15 @@ def ejecutar_escenario(escenario, sesion) -> tuple:
     )
     print("[main] Serializando mejor modelo...")
     mejor_modelo_bytes = serializar_modelo(mejor_modelo)
-    guardar_individuo_bd(
+    modelo_id = guardar_individuo_bd(
         sesion, experimento_id, mejor_individuo, mejor_history,
         modelo_bytes=mejor_modelo_bytes,
     )
+    if modelo_id:
+        try:
+            guardar_diagnostico_bd(modelo_id, mejor_modelo, mejor_history, ds_val_final, num_classes)
+        except Exception as e:
+            print(f"[main] Advertencia diagnostico: {e}")
 
     return experimento_id, mejor_fitness, mejor_individuo, fitness_history
 

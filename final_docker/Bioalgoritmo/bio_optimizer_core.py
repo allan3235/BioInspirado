@@ -342,7 +342,7 @@ def generar_diagnostico_imagenes(model, history, val_ds, num_classes: int) -> di
     }
 
 
-def _guardar_diagnostico_bd(modelo_id: int, model, history, val_ds, num_classes: int) -> None:
+def guardar_diagnostico_bd(modelo_id: int, model, history, val_ds, num_classes: int) -> None:
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
@@ -460,7 +460,7 @@ def evaluate_individual(individuo, train_ds, val_ds, num_classes, experimento_id
             modelo_id = guardar_individuo_bd(sesion, experimento_id, individuo, history)
             if modelo_id:
                 try:
-                    _guardar_diagnostico_bd(modelo_id, model, history, ds_val, num_classes)
+                    guardar_diagnostico_bd(modelo_id, model, history, ds_val, num_classes)
                 except Exception as diag_err:
                     print(f"[evaluate_individual] Advertencia diagnóstico: {diag_err}")
         except Exception as bd_err:
