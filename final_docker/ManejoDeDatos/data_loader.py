@@ -36,6 +36,13 @@ from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
 from ManejoDeDatos.basededatos import Imagen, ImagenUso, obtener_sesion
 
+_n_train: int = 0
+
+
+def get_n_train() -> int:
+    return _n_train
+
+
 # ─── Rutas ────────────────────────────────────────────────────────────────────
 # Resuelve rutas relativas al repo independientemente del directorio de trabajo
 _REPO_ROOT   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -594,9 +601,13 @@ def load_dataset_bd():
         tf.TensorSpec(shape=(num_clases,),  dtype=tf.float32),
     )
 
+    global _n_train
+    _n_train = n_train
+
     train_ds = (
         tf.data.Dataset.from_generator(lambda: generador(train_ids), output_signature=sig)
         .shuffle(1000, seed=SEED, reshuffle_each_iteration=True)
+        .repeat()
     )
     val_ds = tf.data.Dataset.from_generator(lambda: generador(val_ids), output_signature=sig)
 

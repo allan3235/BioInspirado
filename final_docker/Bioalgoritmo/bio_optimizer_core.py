@@ -421,7 +421,13 @@ def preparar_datasets(individuo: dict, train_ds, val_ds):
     """
     Aplica batch_size y use_augmentation del individuo a los datasets crudos
     retornados por load_dataset_bd (sin batch, sin augmentation).
+    Retorna (ds_train, ds_val, steps_per_epoch).
+    train_ds ya viene con .repeat() desde load_dataset_bd, por eso se necesita
+    steps_per_epoch para que Keras sepa cuándo termina cada epoch.
     """
+    import math
+    from ManejoDeDatos.data_loader import get_n_train
+
     batch_size = individuo.get("batch_size", 32)
     use_aug    = individuo.get("use_augmentation", True)
     AUTOTUNE   = tf.data.AUTOTUNE
@@ -441,19 +447,22 @@ def preparar_datasets(individuo: dict, train_ds, val_ds):
 
     ds_train = ds_train.batch(batch_size).prefetch(AUTOTUNE)
     ds_val   = val_ds.batch(batch_size).prefetch(AUTOTUNE)
-    return ds_train, ds_val
+    n_train  = get_n_train()
+    steps_per_epoch = math.ceil(n_train / batch_size) if n_train > 0 else None
+    return ds_train, ds_val, steps_per_epoch
 
 
 # ─── Evaluación ──────────────────────────────────────────────────────────────
 
 def evaluate_individual(individuo, train_ds, val_ds, num_classes, experimento_id, sesion) -> float:
     try:
-        ds_train, ds_val = preparar_datasets(individuo, train_ds, val_ds)
+        ds_train, ds_val, steps_per_epoch = preparar_datasets(individuo, train_ds, val_ds)
         model = build_model(individuo, num_classes)
         history = model.fit(
             ds_train,
             validation_data=ds_val,
             epochs=individuo["epochs"],
+            steps_per_epoch=steps_per_epoch,
             verbose=2,
         )
         try:
@@ -465,7 +474,7 @@ def evaluate_individual(individuo, train_ds, val_ds, num_classes, experimento_id
                     print(f"[evaluate_individual] Advertencia diagnóstico: {diag_err}")
         except Exception as bd_err:
             print(f"[evaluate_individual] Advertencia BD: {bd_err}")
-        return float(max(history.history["val_accuracy"]))
+        return float(history.history["val_accuracy"][-1])
     except Exception as err:
         print(f"[evaluate_individual] Error: {err}")
         return 0.0

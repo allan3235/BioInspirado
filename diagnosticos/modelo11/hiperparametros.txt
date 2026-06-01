@@ -1,9 +1,0 @@
-modelo_id          : 11
-tasa_aprendizaje   : 0.0005
-tamano_lote        : 32
-optimizador        : adamw
-epocas             : 50
-aumento_datos      : True
-neuronas_densas    : 256
-tasa_dropout       : 0.2
-filtros_conv       : 32

@@ -118,11 +118,12 @@ def ejecutar_escenario(escenario, sesion) -> tuple:
     mejor_fitness = fitness_history[-1]
 
     mejor_modelo = build_model(mejor_individuo, num_classes)
-    ds_train_final, ds_val_final = preparar_datasets(mejor_individuo, train_ds, val_ds)
+    ds_train_final, ds_val_final, steps_final = preparar_datasets(mejor_individuo, train_ds, val_ds)
     mejor_history = mejor_modelo.fit(
         ds_train_final,
         validation_data=ds_val_final,
         epochs=mejor_individuo["epochs"],
+        steps_per_epoch=steps_final,
         verbose=1,
     )
     print("[main] Serializando mejor modelo...")
