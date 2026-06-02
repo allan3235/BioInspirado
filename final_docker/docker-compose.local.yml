@@ -1,0 +1,20 @@
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    env_file:
+      - ../.env
+    environment:
+      GPU: "1"
+      TF_CPP_MIN_LOG_LEVEL: "3"
+      TF_ENABLE_ONEDNN_OPTS: "0"
+    mem_limit: 8000m
+    deploy:
+      replicas: 1
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

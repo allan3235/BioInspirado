@@ -11,8 +11,8 @@ Uso (desde la carpeta final_docker):
     docker compose run --rm --no-deps --entrypoint python worker Bioalgoritmo/resetear_escenarios.py
 """
 
-import sys
 import os
+import sys
 from dotenv import load_dotenv
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -25,7 +25,7 @@ from sqlalchemy import text
 from ManejoDeDatos.basededatos import (
     engine, iniciar_bd, obtener_sesion, cargar_escenarios,
 )
-from cargar_escenarios import ESCENARIOS
+from cargar_escenarios import ESCENARIOS, ESCENARIO_TEST
 
 
 def contar_filas(conn, tabla: str) -> int:
@@ -63,8 +63,11 @@ def limpiar(conn):
 
 
 def main():
+    modo_test = os.getenv("test", "0").strip() == "1"
+    escenarios_a_cargar = ESCENARIO_TEST if modo_test else ESCENARIOS
+
     print("=" * 50)
-    print("RESET DE ESCENARIOS")
+    print("RESET DE ESCENARIOS" + (" [MODO TEST]" if modo_test else ""))
     print("=" * 50)
 
     iniciar_bd()
@@ -77,9 +80,9 @@ def main():
     with engine.connect() as conn:
         mostrar_estado(conn, "Estado DESPUÉS de limpiar:")
 
-    print(f"\nCargando {len(ESCENARIOS)} escenarios nuevos...")
+    print(f"\nCargando {len(escenarios_a_cargar)} escenario(s)...")
     sesion = obtener_sesion()
-    cargar_escenarios(sesion, ESCENARIOS)
+    cargar_escenarios(sesion, escenarios_a_cargar)
     sesion.close()
 
     with engine.connect() as conn:
@@ -87,12 +90,17 @@ def main():
         ni = contar_filas(conn, "imagenes")
         niu = contar_filas(conn, "imagenes_uso")
         print(f"\nResultado final:")
-        print(f"  escenarios_busqueda : {n} escenarios listos")
+        print(f"  escenarios_busqueda : {n} escenario(s) listo(s)")
         print(f"  imagenes            : {ni} (sin cambios)")
         print(f"  imagenes_uso        : {niu} (sin cambios)")
 
-    print("\nListo. Ahora lanza los contenedores:")
-    print("  docker compose up --scale worker=40")
+    if modo_test:
+        print("\n[TEST] Escenario de prueba cargado: 2 individuos, 1 época.")
+        print("       Lanza 1 worker y verifica que lo toma:")
+        print("  docker compose up --scale worker=1")
+    else:
+        print("\nListo. Ahora lanza los contenedores:")
+        print("  docker compose up --scale worker=40")
 
 
 if __name__ == "__main__":

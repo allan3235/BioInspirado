@@ -146,19 +146,24 @@ def main():
     print(f"[{nodo_id}] Iniciando nodo...")
 
     iniciar_bd()
-    sesion = obtener_sesion()
 
-    rescatados = reintentar_escenarios_colgados(sesion, timeout_minutos=120)
+    sesion_init = obtener_sesion()
+    rescatados = reintentar_escenarios_colgados(sesion_init, timeout_minutos=120)
     if rescatados:
         print(f"[{nodo_id}] {rescatados} escenario(s) colgado(s) reencolado(s).")
+    sesion_init.close()
 
     inicio_global = time.time()
     escenarios_procesados = 0
 
     while True:
+        # Sesión fresca por cada escenario: evita que la conexión muera
+        # durante entrenamientos de horas y cause fallos al guardar.
+        sesion = obtener_sesion()
         escenario = tomar_escenario(sesion, nodo_id)
 
         if escenario is None:
+            sesion.close()
             print(f"[{nodo_id}] No hay escenarios pendientes. Nodo terminado.")
             break
 
@@ -190,7 +195,9 @@ def main():
             fallar_escenario(sesion, escenario.id, str(e))
             print(f"[{nodo_id}] Error en escenario #{escenario.id}: {e}")
 
-    sesion.close()
+        finally:
+            sesion.close()
+
     total_tiempo = str(timedelta(seconds=int(time.time() - inicio_global)))
     print(f"[{nodo_id}] Total escenarios procesados: {escenarios_procesados} en {total_tiempo}")
 

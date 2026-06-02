@@ -463,7 +463,7 @@ def evaluate_individual(individuo, train_ds, val_ds, num_classes, experimento_id
             validation_data=ds_val,
             epochs=individuo["epochs"],
             steps_per_epoch=steps_per_epoch,
-            verbose=2,
+            verbose=1,
         )
         try:
             modelo_id = guardar_individuo_bd(sesion, experimento_id, individuo, history)
