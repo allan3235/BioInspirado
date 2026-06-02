@@ -606,7 +606,7 @@ def load_dataset_bd():
 
     train_ds = (
         tf.data.Dataset.from_generator(lambda: generador(train_ids), output_signature=sig)
-        .shuffle(1000, seed=SEED, reshuffle_each_iteration=True)
+        .shuffle(200, seed=SEED, reshuffle_each_iteration=True)
         .repeat()
     )
     val_ds = tf.data.Dataset.from_generator(lambda: generador(val_ids), output_signature=sig)

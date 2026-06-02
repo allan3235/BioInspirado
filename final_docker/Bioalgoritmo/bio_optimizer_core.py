@@ -363,6 +363,11 @@ def serializar_modelo(keras_model: tf.keras.Model) -> Optional[bytes]:
             tmp_path = tmp.name
         try:
             keras_model.save(tmp_path)
+            size = os.path.getsize(tmp_path)
+            if size == 0:
+                print("[serializar_modelo] Error: el archivo guardado está vacío")
+                return None
+            print(f"[serializar_modelo] Archivo temporal: {size / 1024:.1f} KB en {tmp_path}")
             with open(tmp_path, "rb") as f:
                 return f.read()
         finally:
@@ -371,7 +376,7 @@ def serializar_modelo(keras_model: tf.keras.Model) -> Optional[bytes]:
             except Exception:
                 pass
     except Exception as e:
-        print(f"[serializar_modelo] Error: {e}")
+        print(f"[serializar_modelo] Error al guardar modelo: {e}")
         return None
 
 
@@ -440,13 +445,16 @@ def preparar_datasets(individuo: dict, train_ds, val_ds):
             tf.keras.layers.RandomZoom(0.1),
             tf.keras.layers.RandomTranslation(0.1, 0.1),
         ])
-        ds_train = ds_train.map(
-            lambda x, y: (augment(x, training=True), y),
-            num_parallel_calls=AUTOTUNE,
-        )
 
-    ds_train = ds_train.batch(batch_size).prefetch(AUTOTUNE)
-    ds_val   = val_ds.batch(batch_size).prefetch(AUTOTUNE)
+        @tf.autograph.experimental.do_not_convert
+        def augment_fn(x, y):
+            return augment(x, training=True), y
+
+        # 2 hilos fijos en lugar de AUTOTUNE para evitar OOM
+        ds_train = ds_train.map(augment_fn, num_parallel_calls=2)
+
+    ds_train = ds_train.batch(batch_size).prefetch(2)
+    ds_val   = val_ds.batch(batch_size).prefetch(2)
     n_train  = get_n_train()
     steps_per_epoch = math.ceil(n_train / batch_size) if n_train > 0 else None
     return ds_train, ds_val, steps_per_epoch

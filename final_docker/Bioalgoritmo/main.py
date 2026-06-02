@@ -128,15 +128,26 @@ def ejecutar_escenario(escenario, sesion) -> tuple:
     )
     print("[main] Serializando mejor modelo...")
     mejor_modelo_bytes = serializar_modelo(mejor_modelo)
+    if mejor_modelo_bytes:
+        print(f"[main] Modelo serializado — {len(mejor_modelo_bytes) / 1024:.1f} KB")
+    else:
+        print("[main] ADVERTENCIA: serializar_modelo() devolvió None — el archivo NO se guardará en la BD")
+
     modelo_id = guardar_individuo_bd(
         sesion, experimento_id, mejor_individuo, mejor_history,
         modelo_bytes=mejor_modelo_bytes,
     )
     if modelo_id:
+        if mejor_modelo_bytes:
+            print(f"[main] Modelo guardado en BD con archivo (modelo_id={modelo_id})")
+        else:
+            print(f"[main] Modelo guardado en BD SIN archivo (modelo_id={modelo_id})")
         try:
             guardar_diagnostico_bd(modelo_id, mejor_modelo, mejor_history, ds_val_final, num_classes)
         except Exception as e:
             print(f"[main] Advertencia diagnostico: {e}")
+    else:
+        print("[main] ADVERTENCIA: guardar_individuo_bd() falló — modelo encolado para reintento")
 
     return experimento_id, mejor_fitness, mejor_individuo, fitness_history
 

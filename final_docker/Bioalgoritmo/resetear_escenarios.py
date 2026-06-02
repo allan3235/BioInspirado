@@ -51,7 +51,6 @@ def limpiar(conn):
         "metricas",
         "hiperparametros",
         "tareas_evaluacion",
-        "modelos",
         "escenarios_busqueda",
         "experimentos",
     ]
