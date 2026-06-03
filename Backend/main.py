@@ -7,6 +7,9 @@ from torchvision import transforms
 from torchvision.models import convnext_small
 from PIL import Image
 import io
+from pathlib import Path
+
+BASE_DIR = Path(__file__).parent
 
 app = FastAPI()
 
@@ -72,7 +75,7 @@ class OralDiseaseModel(nn.Module):
 
 try:
     ckpt = torch.load(
-        "oral_disease_model.pth",
+        BASE_DIR / "oral_disease_model.pth",
         map_location="cpu",
         weights_only=False
     )
