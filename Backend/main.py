@@ -2,7 +2,9 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 import torch
+import torch.nn as nn
 from torchvision import transforms
+from torchvision.models import convnext_small
 from PIL import Image
 import io
 
@@ -29,9 +31,12 @@ app.add_middleware(
 # ==========================
 
 CLASES = {
-    0: "Caries",
-    1: "Gingivitis",
-    2: "Sano"
+    0: "Calculus",
+    1: "Caries",
+    2: "Gingivitis",
+    3: "Hypodontia",
+    4: "Tooth Discoloration",
+    5: "Ulcers"
 }
 
 # ==========================
@@ -39,34 +44,49 @@ CLASES = {
 # ==========================
 
 transformacion = transforms.Compose([
-    transforms.Resize((256, 256)),
+    transforms.Resize((224, 224)),
     transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    ),
 ])
+
+# ==========================
+# Arquitectura del modelo
+# ==========================
+
+class OralDiseaseModel(nn.Module):
+    def __init__(self, num_classes=6):
+        super().__init__()
+        self.model = convnext_small()
+        in_features = self.model.classifier[-1].in_features
+        self.model.classifier[-1] = nn.Linear(in_features, num_classes)
+
+    def forward(self, x):
+        return self.model(x)
 
 # ==========================
 # Cargar modelo
 # ==========================
 
 try:
-
     ckpt = torch.load(
         "oral_disease_model.pth",
-        map_location="cpu"
+        map_location="cpu",
+        weights_only=False
     )
 
-    print("TIPO:")
-    print(type(ckpt))
+    num_classes = ckpt.get("num_classes", 6)
 
-    if isinstance(ckpt, dict):
-        print("KEYS:")
-        print(ckpt.keys())
+    modelo = OralDiseaseModel(num_classes=num_classes)
+    modelo.load_state_dict(ckpt["model_state_dict"])
+    modelo.eval()
 
-    modelo = None
+    print(f"Modelo cargado correctamente ({num_classes} clases)")
 
 except Exception as e:
-
     print(f"Error cargando modelo: {e}")
-
     modelo = None
 
 # ==========================
@@ -90,20 +110,15 @@ async def predecir(file: UploadFile = File(...)):
 
     try:
 
-        # Leer imagen enviada
         contenido = await file.read()
 
         imagen = Image.open(
             io.BytesIO(contenido)
         ).convert("RGB")
 
-        # Aplicar transformaciones
         imagen_tensor = transformacion(imagen)
-
-        # Agregar dimensión batch
         imagen_batch = imagen_tensor.unsqueeze(0)
 
-        # Inferencia
         with torch.no_grad():
 
             salida = modelo(imagen_batch)
@@ -123,10 +138,16 @@ async def predecir(file: UploadFile = File(...)):
                 clase_predicha
             ].item()
 
+        probabilidades_por_clase = {
+            CLASES[i]: round(probabilidades[0, i].item() * 100, 2)
+            for i in range(len(CLASES))
+        }
+
         return {
             "filename": file.filename,
             "diagnostico": CLASES[clase_predicha],
-            "confianza": round(confianza * 100, 2)
+            "confianza": round(confianza * 100, 2),
+            "probabilidades": probabilidades_por_clase
         }
 
     except Exception as e:
