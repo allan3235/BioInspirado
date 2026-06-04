@@ -141,10 +141,12 @@ async def predecir(file: UploadFile = File(...)):
                 clase_predicha
             ].item()
 
-        probabilidades_por_clase = {
-            CLASES[i]: round(probabilidades[0, i].item() * 100, 2)
-            for i in range(len(CLASES))
+        probabilidades_por_clase = [{
+            "nombre":CLASES[i],
+            "probabilidad":round(probabilidades[0, i].item() * 100, 2)
         }
+        for i in range(len(CLASES))
+        ]
 
         return {
             "filename": file.filename,
