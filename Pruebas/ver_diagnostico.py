@@ -1,5 +1,5 @@
 """
-ver_diagnostico.py — Descarga todo: imágenes, modelo .keras, hiperparámetros y métricas CSV.
+ver_diagnostico.py — Descarga todo: imágenes, modelo .pt, hiperparámetros y métricas CSV.
 Uso:
     python ver_diagnostico.py                  # último modelo guardado
     python ver_diagnostico.py --modelo 42      # modelo específico
@@ -41,12 +41,12 @@ def descargar_modelo(sesion: Session, modelo_id: int, carpeta: str) -> None:
         print(f"  [!] Modelo {modelo_id} no encontrado")
         return
 
-    # Archivo .keras
+    # Archivo .pt
     if modelo.archivo:
-        ruta = os.path.join(carpeta, f"modelo_{modelo_id}.keras")
+        ruta = os.path.join(carpeta, f"modelo_{modelo_id}.pt")
         with open(ruta, "wb") as f:
             f.write(modelo.archivo)
-        print(f"  modelo keras  ->{ruta}")
+        print(f"  modelo pytorch ->{ruta}")
     else:
         print(f"  [!] modelo_{modelo_id}: sin archivo serializado en BD")
 

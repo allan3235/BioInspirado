@@ -16,6 +16,7 @@ Variables de entorno:
 import os
 import sys
 import time
+import torch
 from datetime import timedelta
 
 # Variable de entorno GPU=1/true activa GPU, GPU=0/false la apaga
@@ -47,6 +48,7 @@ from bio_optimizer_core import (
     guardar_diagnostico_bd,
     serializar_modelo,
     build_model,
+    entrenar_modelo,
     crear_experimento,
     preparar_datasets,
 )
@@ -82,8 +84,9 @@ def _progreso(sesion, nodo_id: str, inicio_global: float) -> str:
 
 def ejecutar_escenario(escenario, sesion) -> tuple:
     set_seeds(escenario.seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_ds, val_ds, class_names = load_dataset_bd()
+    train_dataset, val_dataset, class_names = load_dataset_bd()
     num_classes = len(class_names)
 
     experimento_id = crear_experimento(sesion, escenario.nombre)
@@ -113,19 +116,18 @@ def ejecutar_escenario(escenario, sesion) -> tuple:
         raise ValueError(f"Algoritmo desconocido: {escenario.algoritmo}")
 
     mejor_individuo, fitness_history = optimizer.run(
-        train_ds, val_ds, num_classes, experimento_id, sesion
+        train_dataset, val_dataset, num_classes, experimento_id, sesion
     )
     mejor_fitness = fitness_history[-1]
 
-    mejor_modelo = build_model(mejor_individuo, num_classes)
-    ds_train_final, ds_val_final, steps_final = preparar_datasets(mejor_individuo, train_ds, val_ds)
-    mejor_history = mejor_modelo.fit(
-        ds_train_final,
-        validation_data=ds_val_final,
-        epochs=mejor_individuo["epochs"],
-        steps_per_epoch=steps_final,
-        verbose=1,
+    # Reentrenar el mejor individuo para serializar el modelo final
+    mejor_modelo, mejor_optimizer, criterion = build_model(mejor_individuo, num_classes, device)
+    ds_train_final, ds_val_final, _ = preparar_datasets(mejor_individuo, train_dataset, val_dataset)
+    mejor_history = entrenar_modelo(
+        mejor_modelo, ds_train_final, ds_val_final,
+        mejor_optimizer, criterion, mejor_individuo["epochs"], device,
     )
+
     print("[main] Serializando mejor modelo...")
     mejor_modelo_bytes = serializar_modelo(mejor_modelo)
     if mejor_modelo_bytes:
@@ -155,6 +157,8 @@ def ejecutar_escenario(escenario, sesion) -> tuple:
 def main():
     nodo_id = os.environ.get("HOSTNAME", "nodo-local")
     print(f"[{nodo_id}] Iniciando nodo...")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[{nodo_id}] Dispositivo: {device}")
 
     iniciar_bd()
 
@@ -168,8 +172,6 @@ def main():
     escenarios_procesados = 0
 
     while True:
-        # Sesión fresca por cada escenario: evita que la conexión muera
-        # durante entrenamientos de horas y cause fallos al guardar.
         sesion = obtener_sesion()
         escenario = tomar_escenario(sesion, nodo_id)
 

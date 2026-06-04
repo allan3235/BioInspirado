@@ -7,21 +7,20 @@ Corre con:
 import sys
 import os
 
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")  # CPU para prueba rápida
 
-# Carga el .env raíz antes que cualquier import de basededatos,
-# así la cadena de BD local tiene prioridad sobre la del .env de Docker.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv(os.path.join(_REPO_ROOT, ".env"), override=True)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import torch
 from ManejoDeDatos.basededatos import iniciar_bd, obtener_sesion, Modelo
 from ManejoDeDatos.data_loader import load_dataset_bd
 from bio_optimizer_core import (
     build_model,
+    entrenar_modelo,
     preparar_datasets,
     serializar_modelo,
     guardar_individuo_bd,
@@ -30,18 +29,18 @@ from bio_optimizer_core import (
 
 
 INDIVIDUO_PRUEBA = {
-    "epochs":        1,
-    "batch_size":    64,
-    "learning_rate": 1e-4,
-    "optimizer":     "adamw",
-    "dense_units":   512,
-    "dropout_rate":  0.3,
-    "filters":       32,
+    "epochs":           1,
+    "batch_size":       64,
+    "learning_rate":    1e-4,
+    "optimizer":        "adamw",
+    "dense_units":      512,
+    "dropout_rate":     0.3,
+    "filters":          32,
     "use_augmentation": True,
 }
 
 
-def ok(msg):  print(f"  [OK]   {msg}")
+def ok(msg):    print(f"  [OK]   {msg}")
 def fallo(msg, exc=None):
     print(f"  [FALLO] {msg}")
     if exc:
@@ -50,6 +49,9 @@ def fallo(msg, exc=None):
 
 def main():
     print("\n=== TEST: guardar modelo 1 época ===\n")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"  Dispositivo: {device}")
 
     # 1. BD
     try:
@@ -74,11 +76,11 @@ def main():
         fallo("Error cargando dataset desde BD", e)
         sys.exit(1)
 
-    # 3. Preparar datasets y modelo
+    # 3. Preparar DataLoaders y modelo
     try:
-        ds_train, ds_val, steps = preparar_datasets(INDIVIDUO_PRUEBA, train_ds, val_ds)
-        ok(f"Datasets preparados — steps_per_epoch={steps}")
-        modelo = build_model(INDIVIDUO_PRUEBA, num_clases)
+        train_loader, val_loader, steps = preparar_datasets(INDIVIDUO_PRUEBA, train_ds, val_ds)
+        ok(f"DataLoaders preparados — steps_per_epoch={steps}")
+        modelo, optimizer, criterion = build_model(INDIVIDUO_PRUEBA, num_clases, device)
         ok("Modelo construido")
     except Exception as e:
         fallo("Error preparando datasets o construyendo modelo", e)
@@ -86,17 +88,14 @@ def main():
 
     # 4. Entrenamiento 1 época
     try:
-        history = modelo.fit(
-            ds_train,
-            validation_data=ds_val,
-            epochs=1,
-            steps_per_epoch=steps,
-            verbose=1,
+        history = entrenar_modelo(
+            modelo, train_loader, val_loader, optimizer, criterion,
+            epochs=1, device=device,
         )
-        val_acc = history.history["val_accuracy"][-1]
+        val_acc = history["val_accuracy"][-1]
         ok(f"Entrenamiento completado — val_accuracy época final: {val_acc:.4f}")
     except Exception as e:
-        fallo("Error en model.fit()", e)
+        fallo("Error en entrenar_modelo()", e)
         sys.exit(1)
 
     # 5. Serializar

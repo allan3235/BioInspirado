@@ -1,6 +1,6 @@
-FROM rocm/tensorflow:latest
-#FROM tensorflow/tensorflow:2.21.0
-#FROM tensorflow/tensorflow:2.21.0-gpu
+FROM rocm/pytorch:latest
+#FROM pytorch/pytorch:latest
+#FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq-dev \

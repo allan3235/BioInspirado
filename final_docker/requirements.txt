@@ -1,5 +1,6 @@
-numpy==2.4.4
-h5py==3.14.0
+torch
+torchvision
+numpy
 matplotlib
 scikit-learn
 Pillow

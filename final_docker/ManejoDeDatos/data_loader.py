@@ -1,6 +1,6 @@
 """
 Carga del dataset Oral Diseases (Kaggle: salmansajid05/oral-diseases)
-para uso con CNN y algoritmos bioinspirados.
+para uso con CNN y algoritmos bioinspirados — versión PyTorch.
 
 Estructura del flat dataset generado:
     dataset/oral-diseases-flat/
@@ -10,17 +10,6 @@ Estructura del flat dataset generado:
         val/
             Calculus/ | Caries/ | Gingivitis/ | Hypodontia/
             Mouth Ulcer/ | Tooth Discoloration/
-
-Fuentes de datos:
-  - Calculus, Gingivitis, Hypodontia : solo carpetas de clasificación.
-  - Caries, Mouth Ulcer, Tooth Discoloration : carpetas + crops del dataset
-    YOLO (bounding boxes) para aumentar estas clases pequeñas.
-  - Caries (extra) : crops de CAV-TEE (YOLOv5 OBB) y datasetcavitydetection (YOLO estándar).
-  - El split 97/3 original del YOLO se ignora; se aplica 80/20 propio.
-  - Gingivitis del YOLO se ignora para evitar duplicados con el folder.
-
-Para reconstruir el flat dataset con nuevas fuentes:
-  borrar dataset/oral-diseases-flat/ y correr setup() de nuevo.
 """
 
 import math
@@ -31,8 +20,10 @@ import zipfile
 
 import cv2
 import numpy as np
-import tensorflow as tf
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
+import torch
+import torchvision.transforms as T
+from torch.utils.data import Dataset
+from torchvision.datasets import ImageFolder
 
 from ManejoDeDatos.basededatos import Imagen, ImagenUso, obtener_sesion
 
@@ -44,7 +35,6 @@ def get_n_train() -> int:
 
 
 # ─── Rutas ────────────────────────────────────────────────────────────────────
-# Resuelve rutas relativas al repo independientemente del directorio de trabajo
 _REPO_ROOT   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATASET_DIR  = os.path.join(_REPO_ROOT, "dataset", "oral-diseases")
 DATASET_FLAT = os.path.join(_REPO_ROOT, "dataset", "oral-diseases-flat")
@@ -73,15 +63,12 @@ DATASET_CAV_TEE_DIR     = os.path.join(_REPO_ROOT, "dataset", "dental-cavity-cav
 DATASET_CAVITY_YML_NAME = "shahjahanabdullatif/datasetcavitydetection"
 DATASET_CAVITY_YML_DIR  = os.path.join(_REPO_ROOT, "dataset", "dental-cavity-yml")
 
-# Clases que vienen solo de las carpetas de clasificación
 FOLDER_CLASSES = {
     "Calculus":   os.path.join(DATASET_DIR, "Calculus",   "Calculus"),
     "Gingivitis": os.path.join(DATASET_DIR, "Gingivitis", "Gingivitis"),
     "Hypodontia": os.path.join(DATASET_DIR, "hypodontia", "hypodontia"),
 }
 
-# Clases pequeñas: carpetas + crops del YOLO para aumentar datos
-# Formato: class_name -> (carpeta_fuente, yolo_class_id)
 FOLDER_AND_YOLO_CLASSES = {
     "Caries":              (os.path.join(DATASET_DIR, "Data caries",         "Data caries"),         0),
     "Mouth Ulcer":         (os.path.join(DATASET_DIR, "Mouth Ulcer",         "Mouth Ulcer"),          1),
@@ -91,7 +78,6 @@ FOLDER_AND_YOLO_CLASSES = {
 
 # ─── 1. Descarga del dataset ──────────────────────────────────────────────────
 def _download_kaggle_dataset(name: str, dest_dir: str) -> None:
-    """Descarga y extrae un dataset de Kaggle en dest_dir si no existe."""
     if os.path.isdir(dest_dir) and any(os.scandir(dest_dir)):
         print(f"[INFO] Dataset '{name}' ya existe en '{dest_dir}'.")
         return
@@ -104,7 +90,6 @@ def _download_kaggle_dataset(name: str, dest_dir: str) -> None:
 
 
 def download_dataset():
-    """Descarga todos los datasets de Kaggle y construye el flat dataset."""
     if os.path.isdir(DATASET_DIR) and any(os.scandir(DATASET_DIR)):
         print(f"[INFO] Dataset raw ya existe en '{DATASET_DIR}'.")
     else:
@@ -118,7 +103,6 @@ def download_dataset():
         print(f"[INFO] Extrayendo '{zip_path}'...")
         with zipfile.ZipFile(zip_path, "r") as zf:
             for member in zf.infolist():
-                # Eliminar espacios al final de cada segmento (bug en el ZIP original)
                 sanitized = "/".join(p.rstrip() for p in member.filename.split("/"))
                 target = os.path.join(DATASET_DIR, sanitized.replace("/", os.sep))
                 if member.is_dir():
@@ -132,13 +116,11 @@ def download_dataset():
 
     _download_kaggle_dataset(DATASET_CAV_TEE_NAME, DATASET_CAV_TEE_DIR)
     _download_kaggle_dataset(DATASET_CAVITY_YML_NAME, DATASET_CAVITY_YML_DIR)
-
     _build_flat_dataset()
 
 
 # ─── 2. Construcción del flat dataset ────────────────────────────────────────
 def _build_flat_dataset():
-    """Construye DATASET_FLAT con estructura train/ y val/ por clase."""
     train_dir = os.path.join(DATASET_FLAT, "train")
     if os.path.isdir(train_dir) and any(os.scandir(train_dir)):
         print(f"[INFO] Dataset flat ya existe en '{DATASET_FLAT}'.")
@@ -149,12 +131,10 @@ def _build_flat_dataset():
 
     staging_dir = os.path.join(DATASET_FLAT, "_yolo_crops_tmp")
 
-    # Clases solo de folder
     for class_name, src_dir in FOLDER_CLASSES.items():
         images = _collect_folder_images(src_dir)
         _shuffle_split_copy(images, class_name)
 
-    # Clases pequeñas: folder + crops YOLO + fuentes extra para Caries
     for class_name, (src_dir, yolo_id) in FOLDER_AND_YOLO_CLASSES.items():
         folder_imgs = _collect_folder_images(src_dir)
         class_staging = os.path.join(staging_dir, class_name.replace(" ", "_"))
@@ -174,7 +154,6 @@ def _build_flat_dataset():
 
         _shuffle_split_copy(folder_imgs + yolo_crops + extra_crops, class_name)
 
-    # Eliminar directorio temporal de crops
     if os.path.isdir(staging_dir):
         shutil.rmtree(staging_dir)
 
@@ -182,7 +161,6 @@ def _build_flat_dataset():
 
 
 def _collect_folder_images(src_dir: str) -> list:
-    """Recopila rutas de imágenes de un directorio, excluyendo carpetas preview."""
     images = []
     for root, dirs, files in os.walk(src_dir):
         dirs[:] = [d for d in dirs if d.lower() not in EXCLUDE_DIRS]
@@ -193,11 +171,6 @@ def _collect_folder_images(src_dir: str) -> list:
 
 
 def _generate_yolo_crops(yolo_class_id: int, staging_dir: str) -> list:
-    """
-    Recorre train/ y val/ del YOLO dataset, recorta la ROI de cada bounding
-    box que pertenezca a yolo_class_id y guarda los crops en staging_dir.
-    Retorna la lista de rutas generadas.
-    """
     os.makedirs(staging_dir, exist_ok=True)
     crops = []
 
@@ -254,15 +227,6 @@ def _generate_yolo_crops(yolo_class_id: int, staging_dir: str) -> list:
 
 
 def _generate_yolo_obb_crops(dataset_dir: str, staging_dir: str) -> list:
-    """
-    Extrae crops de un dataset YOLOv5 OBB (Roboflow).
-    Soporta dos estructuras de carpetas:
-      - {split}/images/ y {split}/labels/  (Roboflow split-first)
-      - images/{split}/ y labels/{split}/  (YOLO estándar)
-    Soporta dos formatos de anotación OBB:
-      - class cx cy w h angle  (6 valores, ángulo en grados)
-      - class x1 y1 x2 y2 x3 y3 x4 y4  (9 valores, esquinas normalizadas)
-    """
     if not os.path.isdir(dataset_dir):
         print(f"[ADVERTENCIA] CAV-TEE no encontrado en '{dataset_dir}', se omite.")
         return []
@@ -333,11 +297,6 @@ def _generate_yolo_obb_crops(dataset_dir: str, staging_dir: str) -> list:
 
 
 def _generate_yolo_std_crops(dataset_dir: str, class_id: int, staging_dir: str) -> list:
-    """
-    Extrae crops de un dataset YOLO estándar con directorio configurable.
-    Soporta las mismas dos estructuras que _generate_yolo_obb_crops.
-    class_id=0 para la mayoría de datasets de cavidad de una sola clase.
-    """
     if not os.path.isdir(dataset_dir):
         print(f"[ADVERTENCIA] Dataset YML no encontrado en '{dataset_dir}', se omite.")
         return []
@@ -397,11 +356,6 @@ def _generate_yolo_std_crops(dataset_dir: str, class_id: int, staging_dir: str) 
 
 
 def _shuffle_split_copy(images: list, class_name: str):
-    """
-    Mezcla la lista de imágenes, la divide 80/20 y copia cada archivo
-    a DATASET_FLAT/train/{class_name}/ o DATASET_FLAT/val/{class_name}/.
-    Los archivos se renombran con un índice para evitar colisiones.
-    """
     random.shuffle(images)
     split_idx = int(len(images) * (1 - VAL_SPLIT))
     splits = {"train": images[:split_idx], "val": images[split_idx:]}
@@ -418,113 +372,46 @@ def _shuffle_split_copy(images: list, class_name: str):
     print(f"  [{class_name}] {split_idx} train / {total - split_idx} val  (total: {total})")
 
 
-# ─── 3. Generadores Keras ─────────────────────────────────────────────────────
+# ─── 3. Dataset desde carpetas (ImageFolder) ─────────────────────────────────
+
 def load_dataset(use_augmentation: bool = True):
     """
-    Prepara el flat dataset y retorna (train_gen, val_gen, class_names).
-
-    Parámetros
-    ----------
-    use_augmentation : Aplica data augmentation al conjunto de entrenamiento.
-
-    Retorna
-    -------
-    train_gen   : generador de entrenamiento
-    val_gen     : generador de validación
-    class_names : lista de nombres de clases
+    Prepara el flat dataset y retorna (train_dataset, val_dataset, class_names).
+    Los datasets son compatibles con torch.utils.data.DataLoader.
     """
     download_dataset()
 
     train_dir = os.path.join(DATASET_FLAT, "train")
     val_dir   = os.path.join(DATASET_FLAT, "val")
+
+    base_transform = T.Compose([
+        T.Resize(IMG_SIZE),
+        T.ToTensor(),
+    ])
 
     if use_augmentation:
-        train_datagen = ImageDataGenerator(
-            rescale=1.0 / 255,
-            rotation_range=20,
-            width_shift_range=0.1,
-            height_shift_range=0.1,
-            horizontal_flip=True,
-            zoom_range=0.1,
-        )
+        train_transform = T.Compose([
+            T.Resize(IMG_SIZE),
+            T.RandomHorizontalFlip(),
+            T.RandomAffine(degrees=20, translate=(0.1, 0.1), scale=(0.9, 1.1)),
+            T.ToTensor(),
+        ])
     else:
-        train_datagen = ImageDataGenerator(rescale=1.0 / 255)
+        train_transform = base_transform
 
-    val_datagen = ImageDataGenerator(rescale=1.0 / 255)
+    train_dataset = ImageFolder(train_dir, transform=train_transform)
+    val_dataset   = ImageFolder(val_dir,   transform=base_transform)
 
-    train_gen = train_datagen.flow_from_directory(
-        train_dir,
-        target_size=IMG_SIZE,
-        batch_size=BATCH_SIZE,
-        class_mode="categorical",
-        seed=SEED,
-    )
-
-    val_gen = val_datagen.flow_from_directory(
-        val_dir,
-        target_size=IMG_SIZE,
-        batch_size=BATCH_SIZE,
-        class_mode="categorical",
-        seed=SEED,
-    )
-
-    class_names = list(train_gen.class_indices.keys())
+    class_names = train_dataset.classes
     print(f"[INFO] Clases ({len(class_names)}): {class_names}")
-    print(f"[INFO] Train: {train_gen.samples} | Val: {val_gen.samples}")
+    print(f"[INFO] Train: {len(train_dataset)} | Val: {len(val_dataset)}")
 
-    return train_gen, val_gen, class_names
-
-
-# ─── 4. tf.data (más eficiente en GPU) ───────────────────────────────────────
-def load_dataset_tfdata():
-    """
-    Alternativa con tf.data.Dataset para mayor rendimiento en GPU.
-    Retorna (train_ds, val_ds, class_names).
-    """
-    download_dataset()
-
-    train_dir = os.path.join(DATASET_FLAT, "train")
-    val_dir   = os.path.join(DATASET_FLAT, "val")
-
-    AUTOTUNE      = tf.data.AUTOTUNE
-    normalization = tf.keras.layers.Rescaling(1.0 / 255)
-
-    train_ds = tf.keras.utils.image_dataset_from_directory(
-        train_dir,
-        seed=SEED,
-        image_size=IMG_SIZE,
-        batch_size=BATCH_SIZE,
-    )
-    val_ds = tf.keras.utils.image_dataset_from_directory(
-        val_dir,
-        seed=SEED,
-        image_size=IMG_SIZE,
-        batch_size=BATCH_SIZE,
-    )
-
-    class_names = train_ds.class_names
-    print(f"[INFO] Clases ({len(class_names)}): {class_names}")
-
-    train_ds = (
-        train_ds
-        .map(lambda x, y: (normalization(x), y), num_parallel_calls=AUTOTUNE)
-        .cache()
-        .shuffle(1000, seed=SEED)
-        .prefetch(AUTOTUNE)
-    )
-    val_ds = (
-        val_ds
-        .map(lambda x, y: (normalization(x), y), num_parallel_calls=AUTOTUNE)
-        .cache()
-        .prefetch(AUTOTUNE)
-    )
-
-    return train_ds, val_ds, class_names
+    return train_dataset, val_dataset, class_names
 
 
-# ─── 5. Carga desde Base de Datos ────────────────────────────────────────────
+# ─── 4. Carga desde Base de Datos ────────────────────────────────────────────
+
 def _consultar_clases_y_conteos(uso: str):
-    """Retorna (class_names, total) sin cargar imágenes en memoria."""
     sesion = obtener_sesion()
     resultados = (
         sesion.query(Imagen.enfermedad)
@@ -538,7 +425,6 @@ def _consultar_clases_y_conteos(uso: str):
 
 
 def _consultar_ids(uso: str):
-    """Retorna solo los IDs de imagen para el uso dado."""
     sesion = obtener_sesion()
     ids = (
         sesion.query(Imagen.id)
@@ -559,15 +445,45 @@ def _decodificar_imagen(datos_binarios: bytes) -> np.ndarray:
     return img.astype(np.float32) / 255.0
 
 
+class BDDataset(Dataset):
+    """
+    Dataset PyTorch que carga imágenes desde PostgreSQL.
+    Almacena los bytes comprimidos en RAM y decodifica en __getitem__
+    para minimizar el uso de memoria sin abrir una conexión por muestra.
+    """
+
+    def __init__(self, ids: list, clase_a_idx: dict):
+        CHUNK = 200
+        self._raw: list[bytes] = []
+        self._labels: list[int] = []
+
+        for start in range(0, len(ids), CHUNK):
+            bloque = ids[start: start + CHUNK]
+            sesion = obtener_sesion()
+            registros = (
+                sesion.query(Imagen.imagen, Imagen.enfermedad)
+                .filter(Imagen.id.in_(bloque))
+                .all()
+            )
+            sesion.close()
+            for datos, enfermedad in registros:
+                self._raw.append(bytes(datos))
+                self._labels.append(clase_a_idx[enfermedad])
+
+    def __len__(self):
+        return len(self._raw)
+
+    def __getitem__(self, idx):
+        img = _decodificar_imagen(self._raw[idx])          # (H, W, C) float32 [0,1]
+        img = torch.from_numpy(img).permute(2, 0, 1)       # → (C, H, W)
+        return img, self._labels[idx]
+
+
 def load_dataset_bd():
     """
-    Carga el dataset desde PostgreSQL con streaming por lotes (chunk_size imágenes
-    a la vez) para evitar cargar ~5 GB en RAM de una sola vez.
-
-    Retorna (train_ds, val_ds, class_names) SIN batch ni augmentation.
+    Carga el dataset desde PostgreSQL y retorna (train_dataset, val_dataset, class_names).
+    Los datasets son instancias de BDDataset y son compatibles con DataLoader.
     """
-    CHUNK = 200  # imágenes por consulta
-
     print("[INFO] Consultando clases y conteos desde la BD...")
     class_names, n_train = _consultar_clases_y_conteos("entrenar")
     _,           n_val   = _consultar_clases_y_conteos("validar")
@@ -580,41 +496,21 @@ def load_dataset_bd():
     train_ids = _consultar_ids("entrenar")
     val_ids   = _consultar_ids("validar")
 
-    def generador(ids):
-        for inicio in range(0, len(ids), CHUNK):
-            bloque = ids[inicio: inicio + CHUNK]
-            sesion = obtener_sesion()
-            registros = (
-                sesion.query(Imagen.imagen, Imagen.enfermedad)
-                .filter(Imagen.id.in_(bloque))
-                .all()
-            )
-            sesion.close()
-            for datos, enfermedad in registros:
-                img   = _decodificar_imagen(datos)
-                label = np.zeros(num_clases, dtype=np.float32)
-                label[clase_a_idx[enfermedad]] = 1.0
-                yield img, label
-
-    sig = (
-        tf.TensorSpec(shape=(*IMG_SIZE, 3), dtype=tf.float32),
-        tf.TensorSpec(shape=(num_clases,),  dtype=tf.float32),
-    )
-
     global _n_train
     _n_train = n_train
 
-    train_ds = (
-        tf.data.Dataset.from_generator(lambda: generador(train_ids), output_signature=sig)
-        .shuffle(200, seed=SEED, reshuffle_each_iteration=True)
-        .repeat()
-    )
-    val_ds = tf.data.Dataset.from_generator(lambda: generador(val_ids), output_signature=sig)
+    print("[INFO] Cargando imágenes de entrenamiento desde BD...")
+    train_dataset = BDDataset(train_ids, clase_a_idx)
+    print("[INFO] Cargando imágenes de validación desde BD...")
+    val_dataset   = BDDataset(val_ids, clase_a_idx)
 
-    return train_ds, val_ds, class_names
+    return train_dataset, val_dataset, class_names
 
 
 # ─── Prueba rápida ────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    train_gen, val_gen, class_names = load_dataset()
-    print("\n[OK] Dataset listo para usar.")
+    from torch.utils.data import DataLoader
+    train_ds, val_ds, class_names = load_dataset()
+    train_loader = DataLoader(train_ds, batch_size=32, shuffle=True)
+    imgs, labels = next(iter(train_loader))
+    print(f"\n[OK] Dataset listo — batch shape: {imgs.shape}, labels: {labels[:5]}")

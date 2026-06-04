@@ -11,7 +11,11 @@ from datetime import datetime
 from typing import Optional
 
 import numpy as np
-import tensorflow as tf
+import torch
+import torch.nn as nn
+import torchvision.models as tv_models
+import torchvision.transforms as T
+from torch.utils.data import DataLoader, Dataset
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -20,7 +24,9 @@ import matplotlib.pyplot as plt
 def set_seeds(seed: int) -> None:
     np.random.seed(seed)
     random.seed(seed)
-    tf.random.set_seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def validar_parametros_ga(prob_mutacion: float, prob_cruce: float) -> None:
@@ -31,85 +37,170 @@ def validar_parametros_ga(prob_mutacion: float, prob_cruce: float) -> None:
 
 
 _OPTIMIZERS_MAP = {
-    "adam":    tf.keras.optimizers.Adam,
-    "sgd":     tf.keras.optimizers.SGD,
-    "rmsprop": tf.keras.optimizers.RMSprop,
-    "adamw":   tf.keras.optimizers.AdamW,
+    "adam":    torch.optim.Adam,
+    "sgd":     torch.optim.SGD,
+    "rmsprop": torch.optim.RMSprop,
+    "adamw":   torch.optim.AdamW,
 }
 
 
-def build_model(individuo: dict, num_classes: int) -> tf.keras.Model:
-    """
-    CNN propia: dos bloques Conv→BN→MaxPool, GlobalAvgPool, Dense, Dropout, salida.
-    Es el modelo principal que optimizan GA y PSO.
-    """
-    optimizer_name = individuo["optimizer"]
-    if optimizer_name not in _OPTIMIZERS_MAP:
-        raise ValueError(
-            f"Optimizador '{optimizer_name}' no soportado. Válidos: {set(_OPTIMIZERS_MAP.keys())}"
+# ─── Modelos PyTorch ──────────────────────────────────────────────────────────
+
+class _CNN(nn.Module):
+    """CNN propia: tres bloques Conv→BN→ReLU→MaxPool, GlobalAvgPool, Dense, Dropout, salida."""
+
+    def __init__(self, filters: int, dense_units: int, dropout_rate: float, num_classes: int):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, filters, 3, padding=1),
+            nn.BatchNorm2d(filters),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),
+            nn.Conv2d(filters, filters * 2, 3, padding=1),
+            nn.BatchNorm2d(filters * 2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),
+            nn.Conv2d(filters * 2, filters * 4, 3, padding=1),
+            nn.BatchNorm2d(filters * 4),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),
+        )
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.classifier = nn.Sequential(
+            nn.Linear(filters * 4, dense_units),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout_rate),
+            nn.Linear(dense_units, num_classes),
         )
 
-    filters = individuo.get("filters", 32)
-
-    model = tf.keras.Sequential([
-        tf.keras.Input(shape=(224, 224, 3)),
-        tf.keras.layers.Conv2D(filters, (3, 3), activation="relu", padding="same"),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.MaxPooling2D(2, 2),
-        tf.keras.layers.Conv2D(filters * 2, (3, 3), activation="relu", padding="same"),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.MaxPooling2D(2, 2),
-        tf.keras.layers.Conv2D(filters * 4, (3, 3), activation="relu", padding="same"),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.MaxPooling2D(2, 2),
-        tf.keras.layers.GlobalAveragePooling2D(),
-        tf.keras.layers.Dense(individuo["dense_units"], activation="relu"),
-        tf.keras.layers.Dropout(individuo["dropout_rate"]),
-        tf.keras.layers.Dense(num_classes, activation="softmax"),
-    ])
-    optimizer_cls = _OPTIMIZERS_MAP[optimizer_name]
-    opt_kwargs = {"learning_rate": individuo["learning_rate"]}
-    if optimizer_name == "adamw":
-        opt_kwargs["weight_decay"] = 1e-4
-    model.compile(
-        optimizer=optimizer_cls(**opt_kwargs),
-        loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.1),
-        metrics=["accuracy"],
-    )
-    return model
+    def forward(self, x):
+        x = self.features(x)
+        x = self.pool(x)
+        x = x.flatten(1)
+        return self.classifier(x)
 
 
-def build_model_vgg16(individuo: dict, num_classes: int) -> tf.keras.Model:
+class _VGG16Transfer(nn.Module):
     """VGG16 transfer learning — modelo de comparación/baseline."""
+
+    def __init__(self, dense_units: int, dropout_rate: float, num_classes: int):
+        super().__init__()
+        vgg = tv_models.vgg16(weights=tv_models.VGG16_Weights.IMAGENET1K_V1)
+        self.features = vgg.features
+        for param in self.features.parameters():
+            param.requires_grad = False
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.classifier = nn.Sequential(
+            nn.Linear(512, dense_units),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout_rate),
+            nn.Linear(dense_units, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.pool(x)
+        x = x.flatten(1)
+        return self.classifier(x)
+
+
+def _make_optimizer(optimizer_name: str, model: nn.Module, learning_rate: float):
+    opt_cls = _OPTIMIZERS_MAP[optimizer_name]
+    kwargs = {"lr": learning_rate}
+    if optimizer_name == "adamw":
+        kwargs["weight_decay"] = 1e-4
+    elif optimizer_name == "sgd":
+        kwargs["momentum"] = 0.9
+    return opt_cls(model.parameters(), **kwargs)
+
+
+def build_model(individuo: dict, num_classes: int, device=None):
+    """Retorna (model, optimizer, criterion) para la CNN propia."""
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     optimizer_name = individuo["optimizer"]
     if optimizer_name not in _OPTIMIZERS_MAP:
         raise ValueError(
             f"Optimizador '{optimizer_name}' no soportado. Válidos: {set(_OPTIMIZERS_MAP.keys())}"
         )
+    model = _CNN(
+        filters=individuo.get("filters", 32),
+        dense_units=individuo["dense_units"],
+        dropout_rate=individuo["dropout_rate"],
+        num_classes=num_classes,
+    ).to(device)
+    optimizer = _make_optimizer(optimizer_name, model, individuo["learning_rate"])
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    return model, optimizer, criterion
 
-    base_model = tf.keras.applications.VGG16(
-        weights="imagenet", include_top=False, input_shape=(224, 224, 3)
-    )
-    base_model.trainable = False
 
-    model = tf.keras.Sequential([
-        base_model,
-        tf.keras.layers.GlobalAveragePooling2D(),
-        tf.keras.layers.Dense(individuo["dense_units"], activation="relu"),
-        tf.keras.layers.Dropout(individuo["dropout_rate"]),
-        tf.keras.layers.Dense(num_classes, activation="softmax"),
-    ])
+def build_model_vgg16(individuo: dict, num_classes: int, device=None):
+    """Retorna (model, optimizer, criterion) para VGG16 transfer learning."""
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    optimizer_name = individuo["optimizer"]
+    if optimizer_name not in _OPTIMIZERS_MAP:
+        raise ValueError(
+            f"Optimizador '{optimizer_name}' no soportado. Válidos: {set(_OPTIMIZERS_MAP.keys())}"
+        )
+    model = _VGG16Transfer(
+        dense_units=individuo["dense_units"],
+        dropout_rate=individuo["dropout_rate"],
+        num_classes=num_classes,
+    ).to(device)
+    optimizer = _make_optimizer(optimizer_name, model, individuo["learning_rate"])
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    return model, optimizer, criterion
 
-    optimizer_cls = _OPTIMIZERS_MAP[optimizer_name]
-    opt_kwargs = {"learning_rate": individuo["learning_rate"]}
-    if optimizer_name == "adamw":
-        opt_kwargs["weight_decay"] = 1e-4
-    model.compile(
-        optimizer=optimizer_cls(**opt_kwargs),
-        loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.1),
-        metrics=["accuracy"],
-    )
-    return model
+
+# ─── Bucle de entrenamiento ───────────────────────────────────────────────────
+
+def _train_epoch(model, loader, criterion, optimizer, device):
+    model.train()
+    total_loss = total_correct = total = 0
+    for imgs, labels in loader:
+        imgs, labels = imgs.to(device), labels.to(device)
+        optimizer.zero_grad()
+        out = model(imgs)
+        loss = criterion(out, labels)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item() * imgs.size(0)
+        total_correct += (out.argmax(1) == labels).sum().item()
+        total += imgs.size(0)
+    return (total_loss / total, total_correct / total) if total else (0.0, 0.0)
+
+
+def _val_epoch(model, loader, criterion, device):
+    model.eval()
+    total_loss = total_correct = total = 0
+    with torch.no_grad():
+        for imgs, labels in loader:
+            imgs, labels = imgs.to(device), labels.to(device)
+            out = model(imgs)
+            loss = criterion(out, labels)
+            total_loss += loss.item() * imgs.size(0)
+            total_correct += (out.argmax(1) == labels).sum().item()
+            total += imgs.size(0)
+    return (total_loss / total, total_correct / total) if total else (0.0, 0.0)
+
+
+def entrenar_modelo(model, train_loader, val_loader, optimizer, criterion, epochs, device):
+    """Entrena el modelo y retorna un dict con el historial de métricas."""
+    hist = {"loss": [], "val_loss": [], "accuracy": [], "val_accuracy": []}
+    for epoch in range(epochs):
+        tr_loss, tr_acc = _train_epoch(model, train_loader, criterion, optimizer, device)
+        vl_loss, vl_acc = _val_epoch(model, val_loader, criterion, device)
+        hist["loss"].append(tr_loss)
+        hist["val_loss"].append(vl_loss)
+        hist["accuracy"].append(tr_acc)
+        hist["val_accuracy"].append(vl_acc)
+        print(
+            f"Epoch {epoch + 1}/{epochs} — "
+            f"loss: {tr_loss:.4f}  acc: {tr_acc:.4f} | "
+            f"val_loss: {vl_loss:.4f}  val_acc: {vl_acc:.4f}"
+        )
+    return hist
 
 
 # ─── Persistencia ────────────────────────────────────────────────────────────
@@ -157,7 +248,7 @@ def _insertar_en_bd(sesion, tarea: _TareaGuardado) -> int:
     )
     if tarea.modelo_bytes:
         modelo.archivo = tarea.modelo_bytes
-        modelo.formato = "keras"
+        modelo.formato = "pt"
     sesion.add(modelo)
     sesion.flush()
 
@@ -201,8 +292,7 @@ def _worker_reintentos():
         if not pendientes:
             continue
 
-        etiqueta = "modelo(s)" if pendientes else ""
-        print(f"[reintento BD] {len(pendientes)} {etiqueta} pendiente(s) — intentando guardar...")
+        print(f"[reintento BD] {len(pendientes)} modelo(s) pendiente(s) — intentando guardar...")
         exitosas = []
         for i, tarea in enumerate(pendientes):
             sesion = None
@@ -266,10 +356,10 @@ def _fig_to_bytes(fig) -> bytes:
     return buf.read()
 
 
-def generar_diagnostico_imagenes(model, history, val_ds, num_classes: int) -> dict:
+def generar_diagnostico_imagenes(model, history, val_loader, num_classes: int) -> dict:
     from sklearn.metrics import confusion_matrix, f1_score, recall_score
 
-    hist = history.history if hasattr(history, "history") else history
+    hist = history
     epochs = range(1, len(hist.get("loss", [])) + 1)
 
     fig, ax = plt.subplots()
@@ -292,12 +382,20 @@ def generar_diagnostico_imagenes(model, history, val_ds, num_classes: int) -> di
     plt.tight_layout()
     curva_precision = _fig_to_bytes(fig)
 
-    preds = model.predict(val_ds, verbose=0)
-    y_pred = np.argmax(preds, axis=1)
-    y_true = np.concatenate([y.numpy() for _, y in val_ds], axis=0)
-    if len(y_true.shape) > 1:
-        y_true = np.argmax(y_true, axis=1)
-    y_true = y_true.astype(int)
+    device = next(model.parameters()).device
+    model.eval()
+    y_pred_list, y_true_list = [], []
+    with torch.no_grad():
+        for imgs, labels in val_loader:
+            imgs = imgs.to(device)
+            out = model(imgs)
+            y_pred_list.extend(out.argmax(1).cpu().tolist())
+            if isinstance(labels, torch.Tensor):
+                y_true_list.extend(labels.tolist())
+            else:
+                y_true_list.extend(labels)
+    y_pred = np.array(y_pred_list)
+    y_true = np.array(y_true_list, dtype=int)
 
     cm = confusion_matrix(y_true, y_pred, labels=list(range(num_classes)))
     fig, ax = plt.subplots(figsize=(max(6, num_classes), max(5, num_classes)))
@@ -316,9 +414,9 @@ def generar_diagnostico_imagenes(model, history, val_ds, num_classes: int) -> di
     plt.tight_layout()
     matriz_confusion_bytes = _fig_to_bytes(fig)
 
-    labels = list(range(num_classes))
-    recall_vals = recall_score(y_true, y_pred, labels=labels, average=None, zero_division=0)
-    f1_vals = f1_score(y_true, y_pred, labels=labels, average=None, zero_division=0)
+    labels_range = list(range(num_classes))
+    recall_vals = recall_score(y_true, y_pred, labels=labels_range, average=None, zero_division=0)
+    f1_vals = f1_score(y_true, y_pred, labels=labels_range, average=None, zero_division=0)
     x = np.arange(num_classes)
     width = 0.35
     fig, ax = plt.subplots(figsize=(max(8, num_classes * 0.8), 5))
@@ -342,13 +440,13 @@ def generar_diagnostico_imagenes(model, history, val_ds, num_classes: int) -> di
     }
 
 
-def guardar_diagnostico_bd(modelo_id: int, model, history, val_ds, num_classes: int) -> None:
+def guardar_diagnostico_bd(modelo_id: int, model, history, val_loader, num_classes: int) -> None:
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
     from ManejoDeDatos.basededatos import guardar_diagnostico
 
-    diags = generar_diagnostico_imagenes(model, history, val_ds, num_classes)
+    diags = generar_diagnostico_imagenes(model, history, val_loader, num_classes)
     sesion = _nueva_sesion()
     try:
         guardar_diagnostico(sesion, modelo_id, **diags)
@@ -356,13 +454,13 @@ def guardar_diagnostico_bd(modelo_id: int, model, history, val_ds, num_classes: 
         sesion.close()
 
 
-def serializar_modelo(keras_model: tf.keras.Model) -> Optional[bytes]:
-    """Serializa un modelo Keras a bytes .keras. Retorna None si falla."""
+def serializar_modelo(model: nn.Module) -> Optional[bytes]:
+    """Serializa un modelo PyTorch a bytes .pt. Retorna None si falla."""
     try:
-        with tempfile.NamedTemporaryFile(suffix=".keras", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as tmp:
             tmp_path = tmp.name
         try:
-            keras_model.save(tmp_path)
+            torch.save(model, tmp_path)
             size = os.path.getsize(tmp_path)
             if size == 0:
                 print("[serializar_modelo] Error: el archivo guardado está vacío")
@@ -383,7 +481,7 @@ def serializar_modelo(keras_model: tf.keras.Model) -> Optional[bytes]:
 def guardar_individuo_bd(sesion, experimento_id: int, individuo: dict, history,
                          arquitectura: str = "CNN",
                          modelo_bytes: Optional[bytes] = None) -> int:
-    hist = history.history if hasattr(history, "history") else history
+    hist = history if isinstance(history, dict) else {}
     tarea = _TareaGuardado(
         experimento_id=experimento_id,
         individuo=dict(individuo),
@@ -391,8 +489,6 @@ def guardar_individuo_bd(sesion, experimento_id: int, individuo: dict, history,
         arquitectura=arquitectura,
         modelo_bytes=modelo_bytes,
     )
-    # Siempre usamos sesión nueva: la sesión pasada puede llevar abierta todo
-    # el tiempo que duró el entrenamiento y la conexión subyacente ya está muerta.
     sesion_nueva = None
     try:
         sesion_nueva = _nueva_sesion()
@@ -420,69 +516,71 @@ def _safe_get(hist: dict, key: str, idx: int):
     return float(vals[idx]) if idx < len(vals) else None
 
 
-# ─── Preparación de datasets por individuo ───────────────────────────────────
+# ─── Dataset con augmentación ─────────────────────────────────────────────────
 
-def preparar_datasets(individuo: dict, train_ds, val_ds):
-    """
-    Aplica batch_size y use_augmentation del individuo a los datasets crudos
-    retornados por load_dataset_bd (sin batch, sin augmentation).
-    Retorna (ds_train, ds_val, steps_per_epoch).
-    train_ds ya viene con .repeat() desde load_dataset_bd, por eso se necesita
-    steps_per_epoch para que Keras sepa cuándo termina cada epoch.
-    """
-    import math
-    from ManejoDeDatos.data_loader import get_n_train
+class _AugDataset(Dataset):
+    def __init__(self, base_dataset, transform):
+        self._ds = base_dataset
+        self._tf = transform
 
+    def __len__(self):
+        return len(self._ds)
+
+    def __getitem__(self, idx):
+        img, label = self._ds[idx]
+        return self._tf(img), label
+
+
+# ─── Preparación de DataLoaders ───────────────────────────────────────────────
+
+def preparar_datasets(individuo: dict, train_dataset, val_dataset):
+    """
+    Aplica batch_size y use_augmentation del individuo sobre los datasets crudos
+    y retorna (train_loader, val_loader, steps_per_epoch).
+    """
     batch_size = individuo.get("batch_size", 32)
-    use_aug    = individuo.get("use_augmentation", True)
-    AUTOTUNE   = tf.data.AUTOTUNE
+    use_aug = individuo.get("use_augmentation", True)
 
-    ds_train = train_ds
     if use_aug:
-        augment = tf.keras.Sequential([
-            tf.keras.layers.RandomFlip("horizontal"),
-            tf.keras.layers.RandomRotation(0.1),
-            tf.keras.layers.RandomZoom(0.1),
-            tf.keras.layers.RandomTranslation(0.1, 0.1),
+        augment = T.Compose([
+            T.RandomHorizontalFlip(),
+            T.RandomAffine(degrees=36, translate=(0.1, 0.1), scale=(0.9, 1.1)),
         ])
+        train_ds_final = _AugDataset(train_dataset, augment)
+    else:
+        train_ds_final = train_dataset
 
-        @tf.autograph.experimental.do_not_convert
-        def augment_fn(x, y):
-            return augment(x, training=True), y
-
-        # 2 hilos fijos en lugar de AUTOTUNE para evitar OOM
-        ds_train = ds_train.map(augment_fn, num_parallel_calls=2)
-
-    ds_train = ds_train.batch(batch_size).prefetch(2)
-    ds_val   = val_ds.batch(batch_size).prefetch(2)
-    n_train  = get_n_train()
-    steps_per_epoch = math.ceil(n_train / batch_size) if n_train > 0 else None
-    return ds_train, ds_val, steps_per_epoch
+    train_loader = DataLoader(
+        train_ds_final, batch_size=batch_size, shuffle=True,
+        num_workers=2, pin_memory=True, drop_last=False,
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=False,
+        num_workers=2, pin_memory=True,
+    )
+    steps_per_epoch = len(train_loader)
+    return train_loader, val_loader, steps_per_epoch
 
 
 # ─── Evaluación ──────────────────────────────────────────────────────────────
 
-def evaluate_individual(individuo, train_ds, val_ds, num_classes, experimento_id, sesion) -> float:
+def evaluate_individual(individuo, train_dataset, val_dataset, num_classes, experimento_id, sesion) -> float:
     try:
-        ds_train, ds_val, steps_per_epoch = preparar_datasets(individuo, train_ds, val_ds)
-        model = build_model(individuo, num_classes)
-        history = model.fit(
-            ds_train,
-            validation_data=ds_val,
-            epochs=individuo["epochs"],
-            steps_per_epoch=steps_per_epoch,
-            verbose=1,
-        )
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        train_loader, val_loader, _ = preparar_datasets(individuo, train_dataset, val_dataset)
+        model, optimizer, criterion = build_model(individuo, num_classes, device)
+        history = entrenar_modelo(model, train_loader, val_loader, optimizer, criterion,
+                                  individuo["epochs"], device)
         try:
             modelo_id = guardar_individuo_bd(sesion, experimento_id, individuo, history)
             if modelo_id:
                 try:
-                    guardar_diagnostico_bd(modelo_id, model, history, ds_val, num_classes)
+                    guardar_diagnostico_bd(modelo_id, model, history, val_loader, num_classes)
                 except Exception as diag_err:
                     print(f"[evaluate_individual] Advertencia diagnóstico: {diag_err}")
         except Exception as bd_err:
             print(f"[evaluate_individual] Advertencia BD: {bd_err}")
-        return float(history.history["val_accuracy"][-1])
+        return float(history["val_accuracy"][-1])
     except Exception as err:
         print(f"[evaluate_individual] Error: {err}")
         return 0.0
@@ -509,9 +607,9 @@ class GeneticAlgorithm:
             for _ in range(self.poblacion_size)
         ]
 
-    def evaluar_poblacion(self, poblacion, train_ds, val_ds, num_classes, experimento_id, sesion):
+    def evaluar_poblacion(self, poblacion, train_dataset, val_dataset, num_classes, experimento_id, sesion):
         return [
-            evaluate_individual(ind, train_ds, val_ds, num_classes, experimento_id, sesion)
+            evaluate_individual(ind, train_dataset, val_dataset, num_classes, experimento_id, sesion)
             for ind in poblacion
         ]
 
@@ -536,10 +634,10 @@ class GeneticAlgorithm:
             for key, val in individuo.items()
         }
 
-    def run(self, train_ds, val_ds, num_classes, experimento_id, sesion):
+    def run(self, train_dataset, val_dataset, num_classes, experimento_id, sesion):
         poblacion = self.inicializar_poblacion()
         fitness_list = self.evaluar_poblacion(
-            poblacion, train_ds, val_ds, num_classes, experimento_id, sesion
+            poblacion, train_dataset, val_dataset, num_classes, experimento_id, sesion
         )
 
         mejor_idx = int(np.argmax(fitness_list))
@@ -559,7 +657,7 @@ class GeneticAlgorithm:
 
             poblacion = nueva_poblacion[:self.poblacion_size]
             fitness_list = self.evaluar_poblacion(
-                poblacion, train_ds, val_ds, num_classes, experimento_id, sesion
+                poblacion, train_dataset, val_dataset, num_classes, experimento_id, sesion
             )
 
             gen_mejor_idx = int(np.argmax(fitness_list))
@@ -631,14 +729,14 @@ class ParticleSwarmOptimizer:
                 nueva_pos_continua[key] = particula["pos"][key]
         return self.discretizar_posicion(nueva_pos_continua)
 
-    def run(self, train_ds, val_ds, num_classes, experimento_id, sesion):
+    def run(self, train_dataset, val_dataset, num_classes, experimento_id, sesion):
         enjambre = self.inicializar_enjambre()
 
         gbest_pos = None
         gbest_fit = -1.0
         for particula in enjambre:
             fit = evaluate_individual(
-                particula["pos"], train_ds, val_ds, num_classes, experimento_id, sesion
+                particula["pos"], train_dataset, val_dataset, num_classes, experimento_id, sesion
             )
             particula["pbest_fit"] = fit
             if fit > gbest_fit:
@@ -654,7 +752,7 @@ class ParticleSwarmOptimizer:
                 particula["pos"] = nueva_pos
 
                 fit = evaluate_individual(
-                    nueva_pos, train_ds, val_ds, num_classes, experimento_id, sesion
+                    nueva_pos, train_dataset, val_dataset, num_classes, experimento_id, sesion
                 )
                 if fit > particula["pbest_fit"]:
                     particula["pbest_fit"] = fit
@@ -683,7 +781,7 @@ def plot_fitness_history(fitness_history: list, algoritmo: str) -> None:
 
 
 def plot_training_curves(history) -> None:
-    hist = history.history if hasattr(history, "history") else history
+    hist = history if isinstance(history, dict) else {}
     epochs = range(1, len(hist.get("loss", [])) + 1)
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
@@ -702,18 +800,25 @@ def plot_training_curves(history) -> None:
     plt.show()
 
 
-def plot_confusion_matrix(model, val_ds, class_names: list) -> None:
+def plot_confusion_matrix(model, val_loader, class_names: list) -> None:
     if len(class_names) != 6:
         raise ValueError(f"Se esperaban 6 clases, se detectaron {len(class_names)}.")
 
     import seaborn as sns
     from sklearn.metrics import confusion_matrix
 
+    device = next(model.parameters()).device
+    model.eval()
     y_true, y_pred = [], []
-    for images, labels in val_ds:
-        preds = model.predict(images, verbose=0)
-        y_pred.extend(np.argmax(preds, axis=1).tolist())
-        y_true.extend(np.argmax(labels.numpy(), axis=1).tolist())
+    with torch.no_grad():
+        for imgs, labels in val_loader:
+            imgs = imgs.to(device)
+            out = model(imgs)
+            y_pred.extend(out.argmax(1).cpu().tolist())
+            if isinstance(labels, torch.Tensor):
+                y_true.extend(labels.tolist())
+            else:
+                y_true.extend(labels)
 
     cm = confusion_matrix(y_true, y_pred)
     plt.figure(figsize=(8, 6))
